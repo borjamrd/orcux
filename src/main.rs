@@ -676,9 +676,9 @@ pub fn style_ui() -> Res<()> {
     }
     let (gap, card) = (format!("bg={abyss},fg={abyss}"), format!("bg={hull}"));
     let rail = format!("#[bg={hull}#,fg={foam}#,bold]  {}  #[default]", tr().your_prs);
-    // the logo, an "o" and a smaller "x" of dots, and the name. No commas: it goes inside a tmux conditional
+    // the logo, an "o" of four by four dots, and the name. No commas: it goes inside a tmux conditional
     let blue = hex(theme::CURRENT);
-    let name = format!("#[fg={blue}]⢎⡱#[fg={foam}]⢐⢔ #[bold]orcux");
+    let name = format!("#[fg={blue}]⢎#[fg={foam}]⡱ #[bold]orcux");
     let titles = format!("#{{?#{{==:#{{@orcux}},{SIDEBAR}}},{name},#{{?#{{==:#{{@orcux}},{RAIL}}},{rail},#{{@orcux_bar}}}}}}");
     for (k, v) in [
         ("window-status-format", ""),
