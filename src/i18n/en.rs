@@ -217,6 +217,7 @@ pub static EN: Text = Text {
     no_folder: "repo without a folder",
     registered: "already in orcux",
     id_taken: |id| format!("there is already a {id}"),
+    has_inside: |path| format!("there is another worktree inside: {path}. Remove or move it first"),
     imported: |n| format!("{n} imported"),
     to_import: |n| format!("{n} to import. Repeat with --yes to register them."),
     lang_now: |lang, all| format!("language: {lang} (available: {all})"),

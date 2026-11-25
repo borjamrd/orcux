@@ -11,6 +11,7 @@ It does not emulate terminals: **ratatui draws the sidebar and tmux runs the ter
 
 - `cargo build --release`: the binary is `target/release/orcux`, linked from `~/.local/bin/orcux`.
 - `cargo test`: PR classification and parsing, agent states, language choice, text widths per language.
+- `cargo test` also runs `tests/parallel.rs` (several orcux at once) in a tmux of its own (`tests/lab`); without tmux it is skipped.
 - `cargo test --release --test perf -- --ignored --nocapture`: what 50 terminals cost, in a tmux of its own. Limits: no tmux process at rest, 0.5 % of a core per open pane, `orcux ls` under 50 ms, start under 1 s. Run it after touching the loops of `tui.rs` or `control.rs`.
 - `orcux help`: lists the subcommands. The same table (`commands` in `src/i18n/*.rs`) feeds the sidebar's `?` dialog (`orcux commands` in a tmux popup): every new command or shortcut goes there, in every language.
 
@@ -51,6 +52,9 @@ Model:
 - Speed: the panes that stay open never poll. tmux tells what changes (`refresh-client -B`, once a second, and `%window-pane-changed`) and state files are looked at by date. A hidden terminal is not captured, only dated (`window_activity`). The visible one shares its window with the sidebar and the rail, whose own drawing must not count as news: it would redraw for ever.
 - The connections are clients of the session `orcux` too: whoever needs the person's client (popups, detach, "is somebody looking") must ask `viewer()`. They attach with `ignore-size`, or they would resize the window.
 - A command through the connection can answer in several blocks (`if-shell`), so each one is followed by a marker. Commands with control characters, popups and those about the current client go as processes.
+- Several agents run orcux at once: state changes go through `change()` / `lock()`, and tmux changes that read and then act (`spawn`, `ensure_ui`, `show_tab`, `close_tab`) take `lock()` too. Never hold it while git works. A worktree is registered before git creates it, so its name and ports are taken. State files are replaced whole, and one that cannot be read is an error, not an empty list.
+- `swap-pane` gives a pane the window of another one, with the activity of that window: without remembering since when a pane is hidden, a working agent looked idle.
+- `rm` refuses a worktree that holds another one: git would delete it with everything inside.
 - Session targets always use `=` (exact match) and no window index: `=orcux:`. Plain `orcux` prefix-matches `orcux-bg`. The user's `~/.tmux.conf` has `base-index 1`, so `:0` breaks.
 - `run()` does `trim_end()`, which eats the trailing `\t` of the last line when `#{@orcux}` is empty. Parse with a default, never with `split_once(...)?`.
 - `send` waits 150 ms between the text and Enter: TUIs like claude treat text+Enter in one burst as a paste.

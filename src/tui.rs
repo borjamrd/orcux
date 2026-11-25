@@ -145,10 +145,11 @@ enum Wake {
     Input(Input),
     /// panes, their marks or what they print
     Tmux,
-    /// this pane has the focus, or not
-    Focus(bool),
+    /// some pane took the focus
+    Focus,
     Resize,
-    Closed,
+    /// that connection
+    Closed(u32),
 }
 
 struct Wakes {
@@ -156,7 +157,8 @@ struct Wakes {
     rx: mpsc::Receiver<Wake>,
     /// what came together with news of tmux
     later: VecDeque<Wake>,
-    /// last try to connect to tmux
+    /// which connection it is, and the last try
+    link: u32,
     tried: Instant,
     ticked: Instant,
     files: u64,
@@ -179,31 +181,32 @@ impl Wakes {
                 break;
             }
         });
-        let mut w = Wakes { tx, rx, later: VecDeque::new(), tried: Instant::now(), ticked: Instant::now(), files: 0, trees: (Instant::now(), 0) };
+        let mut w = Wakes { tx, rx, later: VecDeque::new(), link: 0, tried: Instant::now(), ticked: Instant::now(), files: 0, trees: (Instant::now(), 0) };
         w.connect();
         w.changed();
         w
     }
 
     fn connect(&mut self) {
-        let (tx, me) = (self.tx.clone(), env::var("TMUX_PANE").unwrap_or_default());
+        self.link += 1;
+        let (tx, link) = (self.tx.clone(), self.link);
         self.tried = Instant::now();
         control::connect(move |n| {
             tx.send(match n {
                 News::Changed => Wake::Tmux,
-                News::Focus(p) => Wake::Focus(p == me),
-                News::Closed => Wake::Closed,
+                News::Focus => Wake::Focus,
+                News::Closed => Wake::Closed(link),
             }).ok();
         });
     }
 
     /// What happened, or None after a second without news. Several news of tmux count as one.
     fn next(&mut self) -> Option<Wake> {
-        if let Some(w) = self.later.pop_front() {
-            return Some(w);
-        }
-        let first = self.rx.recv_timeout(Duration::from_secs(1)).ok()?;
-        if matches!(first, Wake::Closed) {
+        let first = match self.later.pop_front() {
+            Some(w) => w,
+            None => self.rx.recv_timeout(Duration::from_secs(1)).ok()?,
+        };
+        if matches!(first, Wake::Closed(n) if n == self.link) {
             control::close();
         }
         if matches!(first, Wake::Tmux) {
@@ -254,6 +257,21 @@ enum Row {
     Wt(Wt, Vec<bool>),
 }
 
+/// What is known of a terminal's screen. Times are of the clock, as those of tmux and of the marks.
+#[derive(Default)]
+struct Seen {
+    visible: bool,
+    /// since when it is visible, or hidden
+    since: u64,
+    hash: Option<u64>,
+    /// last time that it changed while visible
+    moved: Option<u64>,
+    /// last activity while hidden
+    activity: u64,
+    /// the mark whose dialog was seen on screen
+    dialog: u64,
+}
+
 /// Whether a person has the session open, for the thread that fetches PRs.
 static WATCHED: AtomicBool = AtomicBool::new(true);
 
@@ -262,8 +280,10 @@ struct App {
     sel: usize,
     /// last-resort error line, for when not even a popup can be opened
     msg: String,
-    /// visible pane -> (hash of its screen, last time it changed)
-    seen: HashMap<String, (u64, Option<Instant>)>,
+    /// what is known of each terminal's screen
+    seen: HashMap<String, Seen>,
+    /// to notice that the clock jumped or the computer slept
+    clock: (Instant, u64),
     wts: Vec<Wt>,
     /// worktree id -> its tabs, for those that have a terminal
     live: HashMap<String, Vec<Pane>>,
@@ -312,36 +332,48 @@ impl App {
         WATCHED.store(watched, Ordering::Relaxed);
         self.active = active();
         let now = prs::now();
+        let jumped = now.saturating_sub(self.clock.1) > self.clock.0.elapsed().as_secs() + 5;
+        self.clock = (Instant::now(), now);
         for mut p in panes() {
             if p.wt == SIDEBAR || p.wt == RAIL {
                 continue;
             }
             let visible = front.as_ref() == Some(&p.pane);
-            let screen = || tmux(&["capture-pane", "-p", "-t", &p.pane]).unwrap_or_default();
+            let s = self.seen.entry(p.pane.clone()).or_insert_with(|| Seen { visible, ..Seen::default() });
+            if jumped {
+                (s.since, s.moved) = (now, s.moved.map(|_| now));
+            }
+            if s.visible != visible {
+                // a hidden terminal tells by its window, and it has just got one with a past of its own
+                *s = Seen { visible, since: now, moved: visible.then_some(s.activity), dialog: s.dialog, ..Seen::default() };
+            }
+            if !visible {
+                s.activity = p.activity;
+            }
             let asks = p.agent.filter(|a| a.0.waits());
-            // only the visible terminal is captured, and only if its agent does not tell what it needs
-            let seen = (visible && p.agent.is_none_or(|a| a.0.waits() || a.0 == Agent::Working)).then(screen);
-            let still = match &seen {
-                Some(text) => {
-                    let mut h = DefaultHasher::new();
-                    text.hash(&mut h);
-                    let h = h.finish();
-                    let e = self.seen.entry(p.pane.clone()).or_insert((h, None));
-                    if e.0 != h {
-                        *e = (h, Some(Instant::now()));
-                    }
-                    e.1.map(|t| t.elapsed().as_secs())
+            let working = p.agent.is_some_and(|a| a.0 == Agent::Working);
+            let quiet = |at: u64| now.saturating_sub(at);
+            // how long a hidden one has been still; the visible one is captured, if its agent does not tell what it needs
+            let hidden = quiet(if working { p.activity.max(s.since) } else { p.activity });
+            let moved = !visible && asks.is_some_and(|(_, at)| hidden + 2 < quiet(at));
+            let unseen = asks.is_some_and(|(_, at)| s.dialog != at);
+            let look = if visible { p.agent.is_none() || working || asks.is_some() } else { moved || unseen };
+            let text = look.then(|| tmux(&["capture-pane", "-p", "-t", &p.pane]).ok()).flatten();
+            if visible && let Some(text) = &text {
+                let mut h = DefaultHasher::new();
+                text.hash(&mut h);
+                let h = Some(h.finish());
+                if s.hash.is_some() && s.hash != h {
+                    s.moved = Some(now);
                 }
-                None if visible => None,
-                None => Some(now.saturating_sub(p.activity)),
-            };
-            let moved = asks.is_some_and(|(_, at)| still.is_some_and(|s| s + 2 < now.saturating_sub(at)));
-            let text = match seen {
-                Some(text) => text,
-                None if moved => screen(),
-                None => String::new(),
-            };
-            let (busy, new) = agent::settle(p.agent, &Screen { still, text, visible: visible && watched }, now);
+                s.hash = h;
+            }
+            if let (Some((_, at)), Some(text)) = (asks, &text) && text.contains(agent::DIALOG) {
+                s.dialog = at;
+            }
+            let still = if visible { s.moved.map(quiet) } else { Some(hidden) };
+            let dialog = asks.is_some_and(|(_, at)| s.dialog == at);
+            let (busy, new) = agent::settle(p.agent, &Screen { still, text, dialog, visible: visible && watched }, now);
             p.busy = busy;
             if let (Some(was), Some(new)) = (p.agent, new) {
                 agent::replace(&p.pane, was, new);
@@ -392,7 +424,8 @@ impl App {
 
     /// Something that will change by itself: an agent that stops, or a terminal that is missing.
     fn pending(&self) -> bool {
-        self.missing || self.live.values().flatten().any(|p| p.busy)
+        let asked = |p: &Pane| p.agent.is_some_and(|a| a.0.waits()) && self.seen.get(&p.pane).is_some_and(|s| s.visible);
+        self.missing || self.live.values().flatten().any(|p| p.busy || asked(p))
     }
 
     fn update_status(&mut self, wts: &[Wt]) {
@@ -616,7 +649,7 @@ pub fn run() -> Res<()> {
         }
     });
     let mut app = App {
-        rows: vec![], sel: 1, msg: String::new(), seen: HashMap::new(), live: HashMap::new(),
+        rows: vec![], sel: 1, msg: String::new(), seen: HashMap::new(), clock: (Instant::now(), prs::now()), live: HashMap::new(),
         prs: Cache::default(), active: true, status: Default::default(), busy: HashMap::new(),
         visible: String::new(), missing: false, bar: String::new(), wts: vec![],
     };
@@ -634,18 +667,15 @@ pub fn run() -> Res<()> {
         }
         let k = match wake {
             Some(Wake::Input(Input::Key(k))) => k,
-            Some(Wake::Focus(on)) => {
+            Some(Wake::Focus) => {
+                let on = active();
                 draw = app.active != on;
                 app.active = on;
                 continue;
             }
-            Some(Wake::Resize) => {
-                draw = true;
-                continue;
-            }
             w => {
                 // half a minute: what tells how long ago something was
-                draw = matches!(w, Some(Wake::Tmux)) || wakes.changed() || app.pending() || !control::connected() || last.elapsed().as_secs() >= 30;
+                draw = matches!(w, Some(Wake::Tmux | Wake::Resize)) || wakes.changed() || app.pending() || !control::connected() || last.elapsed().as_secs() >= 30;
                 if draw {
                     app.refresh();
                     last = Instant::now();
@@ -933,9 +963,11 @@ fn rail_input(wakes: &mut Wakes, binary: &Binary, focused: &mut bool, busy: bool
     loop {
         match wakes.next() {
             Some(Wake::Input(i)) => return Some(i),
-            Some(Wake::Focus(on)) if on != *focused => {
-                *focused = on;
-                return None;
+            Some(Wake::Focus) => {
+                let was = std::mem::replace(focused, active());
+                if was != *focused {
+                    return None;
+                }
             }
             Some(Wake::Resize) => return None,
             _ => {}

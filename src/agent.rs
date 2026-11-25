@@ -43,11 +43,17 @@ impl Agent {
     }
 }
 
+/// In the footer of the dialogs of Claude Code.
+pub const DIALOG: &str = "Esc to cancel";
+
 /// What a pane looks like from outside.
 pub struct Screen {
     /// seconds since it last changed, if it did since it is watched
     pub still: Option<u64>,
-    pub text: String,
+    /// None: not looked at
+    pub text: Option<String>,
+    /// its dialog was seen on screen since it asked
+    pub dialog: bool,
     /// in front of the user
     pub visible: bool,
 }
@@ -64,8 +70,10 @@ pub fn settle(mark: Option<(Agent, u64)>, screen: &Screen, now: u64) -> (bool, O
         // ponytail: a still view of Claude (its transcript) looks interrupted until its next hook.
         Agent::Working if age >= 6 && screen.still.is_some_and(|s| s >= 6) => (false, Some(Agent::Idle)),
         Agent::Working => (moved_within(6), None),
-        // its dialog is gone: it moved after it was drawn, and the footer of the dialog is not there
-        Agent::Question | Agent::Permission if age > 2 && moved_within(age - 2) && !screen.text.contains("Esc to cancel") => {
+        // its dialog is gone: it was there, or the screen moved after it was drawn, and its footer is not
+        Agent::Question | Agent::Permission
+            if age > 2 && (screen.dialog || moved_within(age - 2)) && screen.text.as_ref().is_some_and(|t| !t.contains(DIALOG)) =>
+        {
             (true, Some(Agent::Working))
         }
         Agent::Done | Agent::Failed if screen.visible => (false, Some(Agent::Idle)),
@@ -151,7 +159,7 @@ mod tests {
 
     #[test]
     fn settles() {
-        let s = |still: Option<u64>, text: &str, visible: bool| Screen { still, text: text.into(), visible };
+        let s = |still: Option<u64>, text: &str, visible: bool| Screen { still, text: Some(text.into()), dialog: false, visible };
         let menu = "1. Tea\nEnter to select · Esc to cancel";
         let at = |a: Agent| Some((a, 100));
         assert_eq!(settle(None, &s(Some(1), "", false), 200), (true, None));
@@ -165,6 +173,9 @@ mod tests {
         assert_eq!(settle(at(Agent::Question), &s(Some(50), "", false), 200), (true, Some(Agent::Working))); // answered
         assert_eq!(settle(at(Agent::Question), &s(Some(100), "", false), 200), (false, None)); // only its dialog was drawn
         assert_eq!(settle(at(Agent::Permission), &s(None, "", false), 200), (false, None));
+        let quick = |text: Option<&str>| Screen { still: Some(98), text: text.map(String::from), dialog: true, visible: true };
+        assert_eq!(settle(at(Agent::Permission), &quick(Some("rejected at once")), 200), (true, Some(Agent::Working)));
+        assert_eq!(settle(at(Agent::Permission), &quick(None), 200), (false, None)); // not looked at
         assert_eq!(settle(at(Agent::Done), &s(Some(1), "", false), 200), (false, None));
         assert_eq!(settle(at(Agent::Done), &s(Some(1), "", true), 200), (false, Some(Agent::Idle))); // seen
         assert_eq!(settle(at(Agent::Idle), &s(Some(0), "", true), 200), (false, None)); // the user types

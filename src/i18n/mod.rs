@@ -173,6 +173,8 @@ pub struct Text {
     pub no_folder: &'static str,
     pub registered: &'static str,
     pub id_taken: fn(&str) -> String,
+    /// its folder holds another worktree
+    pub has_inside: fn(&str) -> String,
     pub imported: fn(usize) -> String,
     pub to_import: fn(usize) -> String,
     pub lang_now: fn(&str, &str) -> String,

@@ -92,12 +92,19 @@ impl Wt {
         let head = fs::read_to_string(dir.join("HEAD")).ok()?;
         Some(head.trim().strip_prefix("ref: refs/heads/")?.into())
     }
+    /// The same worktree, whatever else changed.
+    pub fn is(&self, other: &Wt) -> bool {
+        self.repo == other.repo && self.name == other.name
+    }
     pub fn port(&self) -> u32 {
         10000 + self.slot * 100
     }
     fn env(&self) -> Vec<String> {
-        let compose: String = self.id().to_lowercase().chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+        let plain = |w: &Wt| w.id().to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect::<String>();
+        let mut compose = plain(self);
+        if load().iter().any(|w| !w.is(self) && w.slot < self.slot && plain(w) == compose) {
+            compose += &format!("-{}", self.slot); // "a/b-c" and "a-b/c"
+        }
         let mut all = vec![
             format!("ORCUX_ID={}", self.id()),
             format!("ORCUX_PORT={}", self.port()),
@@ -138,7 +145,11 @@ fn run(cmd: &str, args: &[&str], cwd: Option<&Path>) -> Res<String> {
 }
 
 pub fn tmux(args: &[&str]) -> Res<String> {
-    control::command(args).unwrap_or_else(|| run("tmux", args, None))
+    control::command(args).unwrap_or_else(|| {
+        // as arguments of a process, a last ";" would separate commands
+        let args: Vec<String> = args.iter().map(|a| a.strip_suffix(';').map_or(a.to_string(), |a| format!("{a}\\;"))).collect();
+        run("tmux", &args.iter().map(String::as_str).collect::<Vec<_>>(), None)
+    })
 }
 
 /// The client of the person, with its size: the connections of `control` are clients too.
@@ -165,6 +176,54 @@ pub fn git(dir: &Path, args: &[&str]) -> Res<String> {
 
 // ---------- state: two plain files, no db ----------
 
+/// Held while state files or the layout of tmux change: several agents may run orcux at once. Never while git works.
+/// The same thread can take it again.
+pub struct Lock(Option<fs::File>);
+
+thread_local!(static HELD: std::cell::Cell<u32> = const { std::cell::Cell::new(0) });
+
+pub fn lock() -> Lock {
+    let first = HELD.get() == 0;
+    HELD.set(HELD.get() + 1);
+    let take = || {
+        let f = fs::File::create(state_dir().join("lock")).ok()?;
+        f.lock().ok()?;
+        Some(f)
+    };
+    Lock(if first { take() } else { None })
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        HELD.set(HELD.get() - 1);
+        drop(self.0.take());
+    }
+}
+
+/// What cannot be read is not the same as empty: it would be saved as such.
+fn read_state(name: &str) -> Res<String> {
+    match fs::read_to_string(state_dir().join(name)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("{name}: {e}")),
+        r => Ok(r.unwrap_or_default()),
+    }
+}
+
+/// Whole or not at all: others may be reading it.
+fn write_state(name: &str, text: &str) -> Res<()> {
+    let tmp = state_dir().join(format!("{name}.{}", std::process::id()));
+    fs::write(&tmp, text).and_then(|_| fs::rename(&tmp, state_dir().join(name))).map_err(|e| format!("{name}: {e}"))
+}
+
+/// Changes the list of worktrees as it is now.
+fn change<T>(f: impl FnOnce(&mut Vec<Wt>) -> Res<T>) -> Res<T> {
+    let _lock = lock();
+    read_state("worktrees.tsv")?;
+    let mut wts = load();
+    let out = f(&mut wts)?;
+    save(&wts)?;
+    Ok(out)
+}
+
 pub fn load() -> Vec<Wt> {
     fs::read_to_string(state_dir().join("worktrees.tsv")).unwrap_or_default().lines()
         .filter_map(|l| {
@@ -179,7 +238,7 @@ fn save(wts: &[Wt]) -> Res<()> {
     let at = |w: &Wt| w.at.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
     let line = |w: &Wt| format!("{}\t{}\t{}\t{}\t{}\n", w.repo.display(), w.name, w.slot, at(w), w.parent.as_deref().unwrap_or(""));
     let s: String = wts.iter().map(line).collect();
-    fs::write(state_dir().join("worktrees.tsv"), s).map_err(|e| e.to_string())
+    write_state("worktrees.tsv", &s)
 }
 
 /// The worktrees of a repo as a tree, parents before their children. With each one, whether it is the last of its
@@ -214,6 +273,8 @@ pub fn repos() -> Vec<PathBuf> {
 fn add_repo(p: &Path) -> Res<PathBuf> {
     let common = git(p, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
     let main = Path::new(&common).parent().ok_or(tr().not_repo)?.to_path_buf();
+    let _lock = lock();
+    read_state("repos")?;
     let mut r = repos();
     if !r.contains(&main) {
         r.push(main.clone());
@@ -224,11 +285,13 @@ fn add_repo(p: &Path) -> Res<PathBuf> {
 
 fn save_repos(r: &[PathBuf]) -> Res<()> {
     let s: String = r.iter().map(|p| format!("{}\n", p.display())).collect();
-    fs::write(state_dir().join("repos"), s).map_err(|e| e.to_string())
+    write_state("repos", &s)
 }
 
 /// Takes a repo off the sidebar; nothing is deleted. Its worktrees must have left before.
 pub fn remove_repo(repo: &Path) -> Res<()> {
+    let _lock = lock();
+    read_state("repos")?;
     match load().iter().filter(|w| w.repo == repo).count() {
         0 => save_repos(&repos().into_iter().filter(|r| r != repo).collect::<Vec<_>>()),
         n => Err((tr().repo_has_wts)(n)),
@@ -336,36 +399,48 @@ pub fn create(repo: &Path, name: &str, cmd: Option<&str>) -> Res<Wt> {
 /// With a parent, the new branch starts at the parent's last commit instead of origin/HEAD.
 pub fn create_from(repo: &Path, name: &str, cmd: Option<&str>, parent: Option<&Wt>) -> Res<Wt> {
     let repo = add_repo(repo)?;
-    let mut wts = load();
-    if wts.iter().any(|w| w.repo == repo && w.name == name) {
-        return Err((tr().exists)(name));
+    // registered before git works, so that no other process takes its name or its ports
+    let wt = change(|wts| {
+        let wt = Wt { repo: repo.clone(), name: name.into(), slot: free_slot(wts), at: None, parent: parent.map(|p| p.name.clone()) };
+        match wts.iter().find(|w| w.id() == wt.id()) {
+            Some(w) if w.repo == repo => return Err((tr().exists)(name)),
+            Some(w) => return Err((tr().id_taken)(&w.id())),
+            None => wts.push(wt.clone()),
+        }
+        Ok(wt)
+    })?;
+    if let Err(e) = check_out(&wt, parent) {
+        change(|wts| {
+            wts.retain(|w| !w.is(&wt));
+            Ok(())
+        })?;
+        return Err(e);
     }
-    let slot = free_slot(&wts);
-    let wt = Wt { repo: repo.clone(), name: name.into(), slot, at: None, parent: parent.map(|p| p.name.clone()) };
-    let path = wt.path();
+    let pane = spawn(&wt)?;
+    if let Some(c) = cmd {
+        type_into(&pane, c)?;
+    }
+    Ok(wt)
+}
+
+fn check_out(wt: &Wt, parent: Option<&Wt>) -> Res<()> {
+    let (repo, name, path) = (&wt.repo, wt.name.as_str(), wt.path());
     let p = path.to_str().ok_or(tr().non_utf8)?;
-    let has = |r: &str| git(&repo, &["rev-parse", "--verify", "--quiet", r]).is_ok();
+    let has = |r: &str| git(repo, &["rev-parse", "--verify", "--quiet", r]).is_ok();
     let exists = has(&format!("refs/heads/{name}")) || has(&format!("refs/remotes/origin/{name}"));
     if let Some(parent) = parent {
         if exists {
             return Err((tr().branch_exists)(name));
         }
         let base = git(&parent.path(), &["rev-parse", "HEAD"])?;
-        git(&repo, &["worktree", "add", "--no-track", "-b", name, p, &base])?;
+        git(repo, &["worktree", "add", "--no-track", "-b", name, p, &base])?;
     } else if exists {
-        git(&repo, &["worktree", "add", p, name])?;
+        git(repo, &["worktree", "add", p, name])?;
     } else {
         let base = if has("refs/remotes/origin/HEAD") { "origin/HEAD" } else { "HEAD" };
-        git(&repo, &["worktree", "add", "--no-track", "-b", name, p, base])?;
+        git(repo, &["worktree", "add", "--no-track", "-b", name, p, base])?;
     }
-    copy_includes(&repo, &path)?;
-    wts.push(wt.clone());
-    save(&wts)?;
-    let pane = spawn(&wt)?;
-    if let Some(c) = cmd {
-        type_into(&pane, c)?;
-    }
-    Ok(wt)
+    copy_includes(repo, &path)
 }
 
 /// Copies the local-only files listed in the main checkout's .worktreeinclude.
@@ -411,26 +486,29 @@ fn importable(p: &Path, wts: &[Wt]) -> Res<Wt> {
 
 /// Registers existing worktrees without moving or changing them; without `yes`, only lists what it would do.
 fn import(paths: &[&str], yes: bool) -> Res<()> {
-    let mut wts = load();
     let mut n = 0;
-    for p in paths {
-        match importable(Path::new(p), &wts) {
-            Ok(mut w) => {
-                w.slot = free_slot(&wts);
-                println!("+ {:<50} :{:<6} {}", w.id(), w.port(), w.branch().unwrap_or_default());
-                if yes {
-                    add_repo(&w.repo)?;
+    let mut list = |wts: &mut Vec<Wt>| {
+        for p in paths {
+            match importable(Path::new(p), wts) {
+                Ok(mut w) => {
+                    w.slot = free_slot(wts);
+                    println!("+ {:<50} :{:<6} {}", w.id(), w.port(), w.branch().unwrap_or_default());
+                    if yes {
+                        add_repo(&w.repo)?;
+                    }
+                    wts.push(w);
+                    n += 1;
                 }
-                wts.push(w);
-                n += 1;
+                Err(e) => println!("- {p}: {e}"),
             }
-            Err(e) => println!("- {p}: {e}"),
         }
-    }
+        Ok(())
+    };
     if yes {
-        save(&wts)?;
+        change(list)?;
         println!("{}", (tr().imported)(n));
     } else {
+        list(&mut load())?;
         println!("{}", (tr().to_import)(n));
     }
     Ok(())
@@ -438,23 +516,37 @@ fn import(paths: &[&str], yes: bool) -> Res<()> {
 
 pub fn remove(w: &Wt, force: bool) -> Res<()> {
     let path = w.path();
-    if w.at.is_some() {
-        // imported: not ours to delete, not even with --force
+    if w.at.is_some() || !w.repo.exists() {
+        // imported, or of a repo that is not there any more: not ours to delete, not even with --force
     } else if path.exists() {
-        let p = path.to_str().unwrap();
+        let p = path.to_str().ok_or(tr().non_utf8)?;
+        // git would delete it with everything inside, also another worktree in an ignored folder
+        let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.into());
+        let others = git(&w.repo, &["worktree", "list", "--porcelain"])?;
+        let others = others.lines().filter_map(|l| l.strip_prefix("worktree ")).map(PathBuf::from).chain(load().into_iter().map(|w| w.path()));
+        if let Some(inside) = others.map(|o| real(&o)).find(|o| *o != real(&path) && o.starts_with(real(&path))) {
+            return Err((tr().has_inside)(&tilde(&inside)));
+        }
         let args: &[&str] = if force { &["worktree", "remove", "--force", p] } else { &["worktree", "remove", p] };
         git(&w.repo, args)?; // first: a dirty worktree fails here, before we touch its terminal
     } else {
         git(&w.repo, &["worktree", "prune"])?;
     }
-    for p in tabs(&w.id()) {
-        tmux(&["kill-pane", "-t", &p.pane])?;
+    change(|wts| {
+        let parent = wts.iter().find(|x| x.is(w)).and_then(|x| x.parent.clone());
+        wts.retain(|x| !x.is(w));
+        for child in wts.iter_mut().filter(|x| x.repo == w.repo && x.parent.as_ref() == Some(&w.name)) {
+            child.parent = parent.clone(); // up one level
+        }
+        Ok(())
+    })?;
+    // its own terminal goes last: with it, this process ends
+    let me = env::var("TMUX_PANE").unwrap_or_default();
+    let mut all = tabs(&w.id());
+    all.sort_by_key(|p| p.pane == me);
+    for p in all {
+        tmux(&["kill-pane", "-t", &p.pane]).ok(); // it may be gone already
     }
-    let mut left: Vec<Wt> = load().into_iter().filter(|x| x != w).collect();
-    for child in left.iter_mut().filter(|x| x.repo == w.repo && x.parent.as_ref() == Some(&w.name)) {
-        child.parent = w.parent.clone(); // up one level
-    }
-    save(&left)?;
     if tmux(&["has-session", "-t", UI]).is_ok() {
         ensure_ui()?; // the killed pane may have been the visible one
     }
@@ -547,6 +639,7 @@ fn pane_at(w: &Wt, tab: Option<u32>) -> Res<String> {
 }
 
 fn spawn(w: &Wt) -> Res<String> {
+    let _lock = lock();
     let (id, path) = (w.id(), w.path().to_string_lossy().to_string());
     let taken: Vec<u32> = tabs(&id).iter().map(|p| p.tab).collect();
     let tab = (1..).find(|n| !taken.contains(n)).unwrap().to_string();
@@ -555,7 +648,9 @@ fn spawn(w: &Wt) -> Res<String> {
     } else {
         vec!["new-session".into(), "-d".into(), "-s".into(), BG.into()]
     };
-    a.extend(["-n".into(), id.clone(), "-c".into(), path, "-P".into(), "-F".into(), "#{pane_id}".into()]);
+    // tmux expands formats in these two: "fix-#Solo" would start somewhere else
+    let plain = |s: &str| s.replace('#', "##");
+    a.extend(["-n".into(), plain(&id), "-c".into(), plain(&path), "-P".into(), "-F".into(), "#{pane_id}".into()]);
     for e in w.env() {
         a.extend(["-e".into(), e]);
     }
@@ -574,7 +669,7 @@ fn ensure_pane(w: &Wt) -> Res<String> {
 }
 
 fn type_into(pane: &str, text: &str) -> Res<()> {
-    tmux(&["send-keys", "-t", pane, "-l", text])?;
+    tmux(&["send-keys", "-t", pane, "-l", "--", text])?;
     thread::sleep(Duration::from_millis(150)); // TUIs like claude treat text+Enter in one burst as a paste
     tmux(&["send-keys", "-t", pane, "Enter"]).map(|_| ())
 }
@@ -588,6 +683,7 @@ fn ui_panes() -> Vec<(String, String)> {
 
 /// Session "orcux": left pane = sidebar, right pane = whichever worktree terminal is shown.
 pub fn ensure_ui() -> Res<()> {
+    let _lock = lock();
     let home = home().to_string_lossy().to_string();
     let exe = env::current_exe().map_err(|e| e.to_string())?;
     let welcome = format!("'{}' welcome", exe.display());
@@ -674,6 +770,9 @@ fn restart_panes() -> Res<()> {
 pub fn toggle_rail() -> Res<()> {
     let choice = if ui_pane(RAIL).is_some() { "off" } else { "on" };
     tmux(&["set-option", "-t", &format!("{UI}:"), "@orcux_prs", choice])?;
+    if ui_pane(RAIL) == env::var("TMUX_PANE").ok() {
+        return Ok(()); // it would close itself halfway: the sidebar is told of the option
+    }
     sync_rail()
 }
 
@@ -777,6 +876,7 @@ pub fn show(w: &Wt) -> Res<()> {
 }
 
 pub fn show_tab(w: &Wt, tab: Option<u32>) -> Res<()> {
+    let _lock = lock();
     ensure_ui()?;
     let pane = pane_at(w, tab)?;
     let (right, mark) = terminal_pane().ok_or(tr().no_pane)?;
@@ -814,13 +914,14 @@ pub fn folded() -> Vec<PathBuf> {
 }
 
 pub fn toggle_fold(p: &Path) {
+    let _lock = lock();
     let mut f = folded();
     match f.iter().position(|x| x == p) {
         Some(i) => { f.remove(i); }
         None => f.push(p.into()),
     }
     let s: String = f.iter().map(|p| format!("{}\n", p.display())).collect();
-    fs::write(state_dir().join("folded"), s).ok();
+    write_state("folded", &s).ok();
 }
 
 /// Repos by the folder they are in, both in order of appearance, with a name for each folder: its last part, or the
@@ -850,11 +951,12 @@ fn recent() -> Vec<String> {
 }
 
 fn touch_recent(id: &str) {
+    let _lock = lock();
     let mut r = recent();
     r.retain(|x| x != id);
     r.insert(0, id.into());
     r.truncate(50);
-    fs::write(state_dir().join("recent"), r.join("\n")).ok();
+    write_state("recent", &r.join("\n")).ok();
 }
 
 /// Every worktree: the visible one first, then by last use.
@@ -922,6 +1024,7 @@ pub fn step_tab(forward: bool) -> Res<()> {
 }
 
 pub fn close_tab(w: &Wt, n: u32) -> Res<()> {
+    let _lock = lock();
     let pane = pane_at(w, Some(n))?;
     let on_screen = terminal_pane().is_some_and(|p| p.0 == pane);
     let t = tabs(&w.id());

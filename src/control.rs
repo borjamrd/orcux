@@ -12,8 +12,8 @@ use std::{
 pub enum News {
     /// panes, their marks or what they print
     Changed,
-    /// this pane has the focus now
-    Focus(String),
+    /// a pane took the focus of its window, whichever they are
+    Focus,
     Closed,
 }
 
@@ -42,7 +42,7 @@ fn watched() -> String {
         "#{{pane_id}} #{{@orcux}} #{{@orcux_tab}} #{{@orcux_on}} #{{@orcux_state}} #{{pane_active}} #{{pane_current_command}} \
          #{{?#{{==:#{{session_name}},orcux}},{visible},#{{window_activity}}}};"
     );
-    format!("#{{S:#{{?#{{m:orcux*,#{{session_name}}}},#{{session_attached}} #{{W:#{{P:{pane}}}}},}}}}")
+    format!("#{{S:#{{?#{{m:orcux*,#{{session_name}}}},#{{session_attached}} #{{@orcux_prs}} #{{W:#{{window_width}} #{{P:{pane}}}}},}}}}")
 }
 
 pub fn connect(news: impl Fn(News) + Send + 'static) -> bool {
@@ -73,8 +73,8 @@ pub fn connect(news: impl Fn(News) + Send + 'static) -> bool {
                 block = Some((head.into(), vec![]));
             } else if line.starts_with("%subscription-changed ") {
                 news(News::Changed);
-            } else if let Some(l) = line.strip_prefix("%window-pane-changed ") {
-                news(News::Focus(l.rsplit(' ').next().unwrap_or("").into()));
+            } else if line.starts_with("%window-pane-changed ") {
+                news(News::Focus);
             }
         }
         drop(tx);
@@ -100,9 +100,10 @@ fn quote(arg: &str) -> String {
     format!("'{}'", arg.replace('\'', "'\"'\"'"))
 }
 
-/// Those that act on the client that asks, or that would block the connection.
+/// Not those that act on the client that asks, that would block the connection, or that start programs: these get
+/// the PATH of an unattached client only.
 fn suits(args: &[&str]) -> bool {
-    !matches!(args.first(), None | Some(&"display-popup" | &"detach-client" | &"switch-client" | &"attach-session"))
+    !matches!(args.first(), None | Some(&"display-popup" | &"detach-client" | &"switch-client" | &"attach-session" | &"new-session" | &"new-window" | &"split-window" | &"respawn-pane"))
         && !args.iter().any(|a| a.chars().any(|c| c.is_control() && c != '\t'))
 }
 

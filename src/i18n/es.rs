@@ -217,6 +217,7 @@ pub static ES: Text = Text {
     no_folder: "repo sin carpeta",
     registered: "ya está en orcux",
     id_taken: |id| format!("ya hay un {id}"),
+    has_inside: |path| format!("dentro hay otro worktree: {path}. Bórralo o muévelo antes"),
     imported: |n| if n == 1 { "1 importado".into() } else { format!("{n} importados") },
     to_import: |n| format!("{n} por importar. Repite con --yes para registrarlos."),
     lang_now: |lang, all| format!("idioma: {lang} (disponibles: {all})"),
