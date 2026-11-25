@@ -3,12 +3,14 @@
 use crate::theme;
 use ratatui::prelude::*;
 
+/// `t` hundredths of the way from one color to the other.
+pub fn mix(from: u32, to: u32, t: u32) -> u32 {
+    [16, 8, 0].into_iter().fold(0, |c, s| c << 8 | ((from >> s & 255) * (100 - t) + (to >> s & 255) * t) / 100)
+}
+
 /// `ink` hundredths of text over the ground.
-pub fn shade(ground: u32, ink: u32) -> u32 {
-    [16, 8, 0].into_iter().fold(0, |c, s| {
-        let (a, b) = (ground >> s & 255, theme::FOAM >> s & 255);
-        c << 8 | (a * (100 - ink) + b * ink) / 100
-    })
+fn shade(ground: u32, ink: u32) -> u32 {
+    mix(ground, theme::FOAM, ink)
 }
 
 /// Each row holds the ink of its pixels.

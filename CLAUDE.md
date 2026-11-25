@@ -19,7 +19,8 @@ It does not emulate terminals: **ratatui draws the sidebar and tmux runs the ter
 - `src/tui.rs`: the sidebar (`orcux sidebar`, the UI's left pane), the PR rail (`orcux rail`, right pane) and the dialogs. Colors come from `src/theme.rs` (design system "orcux"), also for tmux styles.
 - `src/i18n/`: every text the user sees, one file per language (`en`, `es`). Never write a user-facing literal elsewhere: add a field to `Text` (a missing translation does not compile) and use `tr().field`; texts with data are functions. Language: `ORCUX_LANG`, then `orcux lang <code>` (saved in `lang`), then the system, then English. The `every_language_fits` test checks widths.
 - `src/orc.rs`: the animated orc of the commands dialog, at its left (from 134 columns and 22 rows): only the bust, without a background.
-- `src/pixels.rs`: draws it, in shades of the text color, with lower half blocks `▄`: `▀` leaves stripes in fonts that draw it shorter than the cell.
+- `src/mark.rs`: the logo, the "o" of Fraunces Bold in braille dots with a gradient (`DEEP`, `CURRENT`, `FOAM`). Shown by `orcux welcome` (internal), the placeholder pane when no worktree is shown: it passes its keys to the sidebar.
+- `src/pixels.rs`: draws the orc, in shades of the text color, with lower half blocks `▄`: `▀` leaves stripes in fonts that draw it shorter than the cell.
 - `src/agent.rs`: what Claude Code agents say about themselves (working, question, permission, failed, done, idle), through hooks.
 - `src/prs.rs`: open PRs of the registered repos, read-only, through `gh` (JSON reduced to TSV with `--jq`, so no JSON crate).
 
@@ -44,6 +45,7 @@ Model:
 
 ## Gotchas already paid for
 
+- Inside a tmux conditional (`#{?…}`) a comma in a style breaks the whole format, without an error: use two `#[…]` or `#,`.
 - Session targets always use `=` (exact match) and no window index: `=orcux:`. Plain `orcux` prefix-matches `orcux-bg`. The user's `~/.tmux.conf` has `base-index 1`, so `:0` breaks.
 - `run()` does `trim_end()`, which eats the trailing `\t` of the last line when `#{@orcux}` is empty. Parse with a default, never with `split_once(...)?`.
 - `send` waits 150 ms between the text and Enter: TUIs like claude treat text+Enter in one burst as a paste.

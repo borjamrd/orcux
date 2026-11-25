@@ -709,6 +709,52 @@ fn draw_rail(f: &mut Frame, c: &Cache, wts: &[Wt], sel: usize, active: bool, bus
     rows.into_iter().zip(which).filter_map(|((a, b), i)| Some((a, b, i?))).collect()
 }
 
+/// What is shown when no worktree is: the logo and what to do next. Keys go to the sidebar.
+pub fn welcome() -> Res<()> {
+    let mut term = ratatui::init();
+    let binary = Binary::now();
+    let res = loop {
+        if binary.replaced() {
+            ratatui::restore();
+            break Err(restart_self());
+        }
+        let (all, wts) = (panes(), load());
+        let waits = |w: &&Wt| foremost(all.iter().filter(|p| p.wt == w.id())).is_some_and(|p| p.look() == State::Asking);
+        let waiting = wts.iter().filter(waits).count();
+        let drawn = term.draw(|f| {
+            f.render_widget(Block::new().style(Style::new().bg(HULL).fg(FOAM)), f.area());
+            let mut lines = vec![];
+            if f.area().height >= mark::H + 5 && f.area().width >= mark::W + 2 {
+                lines.extend(mark::lines());
+                lines.extend([Line::default(), Line::default()]);
+            }
+            if waiting > 0 {
+                let (g, c) = look(State::Asking);
+                lines.push(Line::from(fg(format!("{g} {}", (tr().agents_wait)(waiting)), c)));
+                lines.push(Line::default());
+            }
+            lines.push(keys(&[("n", tr().k_new), ("A", tr().k_add), ("?", tr().k_commands)]));
+            let [_, middle, _] = Layout::vertical([Constraint::Fill(1), Constraint::Length(lines.len() as u16), Constraint::Fill(1)]).areas(f.area());
+            f.render_widget(Paragraph::new(lines).centered(), middle);
+        });
+        if let Err(e) = drawn {
+            break Err(e.to_string());
+        }
+        let Some(Input::Key(k)) = poll_input(1000) else { continue };
+        let Some(side) = ui_pane(SIDEBAR) else { continue };
+        focus(SIDEBAR).ok();
+        match k {
+            KeyCode::Char(c) => tmux(&["send-keys", "-l", "-t", &side, "--", &c.to_string()]).ok(),
+            KeyCode::Enter => tmux(&["send-keys", "-t", &side, "Enter"]).ok(),
+            KeyCode::Up => tmux(&["send-keys", "-t", &side, "Up"]).ok(),
+            KeyCode::Down => tmux(&["send-keys", "-t", &side, "Down"]).ok(),
+            _ => None,
+        };
+    };
+    ratatui::restore();
+    res
+}
+
 pub fn rail() -> Res<()> {
     let mut term = ratatui::init();
     execute!(stdout(), event::EnableMouseCapture).ok();
