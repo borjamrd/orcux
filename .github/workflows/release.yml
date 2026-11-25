@@ -1,0 +1,67 @@
+# A tag such as v0.1.0 builds every binary and leaves a draft release: a person publishes it.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl }
+          - { os: ubuntu-latest, target: aarch64-unknown-linux-musl }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      # pure Rust: its own linker is enough
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup update stable --no-self-update && rustup default stable && rustup target add ${{ matrix.target }}
+      - name: The tag is the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: test "${GITHUB_REF_NAME#v}" = "$(cargo pkgid | sed 's/.*[#@]//')"
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Pack
+        run: |
+          tar -C target/${{ matrix.target }}/release -czf orcux-${{ matrix.target }}.tar.gz orcux
+      - uses: actions/upload-artifact@v7
+        with:
+          name: orcux-${{ matrix.target }}
+          path: orcux-*.tar.gz
+          if-no-files-found: error
+
+  draft:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums and formula
+        run: |
+          (cd dist && sha256sum orcux-*.tar.gz > SHA256SUMS)
+          packaging/formula.sh "${GITHUB_REF_NAME#v}" dist/SHA256SUMS > dist/orcux.rb
+      - uses: actions/attest-build-provenance@v4
+        if: ${{ !github.event.repository.private }}
+        with:
+          subject-path: dist/orcux-*.tar.gz
+      - run: gh release create "$GITHUB_REF_NAME" --draft --verify-tag --generate-notes dist/*
+        env:
+          GH_TOKEN: ${{ github.token }}

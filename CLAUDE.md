@@ -13,6 +13,9 @@ It does not emulate terminals: **ratatui draws the sidebar and tmux runs the ter
 - `cargo test`: PR classification and parsing, agent states, language choice, text widths per language.
 - `cargo test` also runs `tests/parallel.rs` (several orcux at once) in a tmux of its own (`tests/lab`); without tmux it is skipped.
 - `cargo test --release --test perf -- --ignored --nocapture`: what 50 terminals cost, in a tmux of its own. Limits: no tmux process at rest, 0.5 % of a core per open pane, `orcux ls` under 50 ms, `orcux show` under 100 ms, start under 1 s. Run it after touching the loops of `tui.rs` or `control.rs`.
+- `orcux doctor` (`src/doctor.rs`): checks tmux, git, gh, the locale, the state and broken links of worktrees. tmux 3.3 is the oldest supported (popup styles); options that an older one lacks are skipped.
+- `packaging/`: `install.sh` (checks the checksum) and `formula.sh` (Homebrew). `.github/workflows`: `ci.yml` (macOS and Linux) and `release.yml` (a tag `v*` builds four binaries and leaves a draft).
+- `docs/demo.gif` is made of real screens of an isolated orcux; before recording, set a neutral prompt: the default one shows the user and the computer.
 - `orcux help`: lists the subcommands. The same table (`commands` in `src/i18n/*.rs`) feeds the sidebar's `?` dialog (`orcux commands` in a tmux popup): every new command or shortcut goes there, in every language.
 
 ## Architecture (1 dependency: ratatui)

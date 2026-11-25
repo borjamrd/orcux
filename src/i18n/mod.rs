@@ -180,6 +180,20 @@ pub struct Text {
     pub lang_now: fn(&str, &str) -> String,
     pub lang_bad: fn(&str, &str) -> String,
     pub icons_now: fn(&str, &str) -> String,
+    pub doc_no_tmux: &'static str,
+    pub doc_old_tmux: &'static str,
+    pub doc_no_git: &'static str,
+    pub doc_too_old: fn(&str) -> String,
+    pub doc_gh: &'static str,
+    pub doc_no_gh: &'static str,
+    pub doc_locale: &'static str,
+    pub doc_option: &'static str,
+    pub doc_no_repo: fn(&str) -> String,
+    pub doc_no_folder: fn(&str) -> String,
+    pub doc_link: fn(&str, &str) -> String,
+    pub doc_counts: fn(usize, usize) -> String,
+    pub doc_focus: &'static str,
+    pub doc_bad: fn(usize) -> String,
 }
 
 fn current() -> &'static (&'static str, &'static Text) {
@@ -240,7 +254,7 @@ mod tests {
         assert_eq!(p(&["", ""], &["", "", ""]), "en");
     }
 
-    /// Same commands in every language, and everything fits: sidebar 36 columns, rail 44, dialogs 60, commands 94, orc 44.
+    /// Same commands in every language, and everything fits: sidebar 36 columns, rail 44, dialogs 60, commands 94, orc.
     #[test]
     fn every_language_fits() {
         let width = |s: &str| Span::raw(s).width();
@@ -270,7 +284,7 @@ mod tests {
             for s in [t.label_repo, t.label_parent, t.label_name, t.label_branch, t.label_port] {
                 assert!(width(s) <= 6, "{lang}: {s}");
             }
-            assert!(t.orc.iter().all(|s| width(s) <= 44), "{lang}: orc");
+            assert!(t.orc.iter().all(|s| width(s) <= crate::orc::W - 3), "{lang}: orc");
             assert!(width(&(t.counts)(99, 99)) <= 42, "{lang}: counts");
         }
     }

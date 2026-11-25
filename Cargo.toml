@@ -2,6 +2,18 @@
 name = "orcux"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.89"
+description = "Git worktrees, ports and terminals for several coding agents at once, in your terminal"
+repository = "https://github.com/borjamrd/orcux"
+readme = "README.md"
+keywords = ["worktree", "tmux", "agents", "terminal", "tui"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = ["docs/", ".github/", "packaging/", "CLAUDE.md"]
 
 [dependencies]
 ratatui = "0.30.2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

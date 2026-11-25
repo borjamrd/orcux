@@ -698,11 +698,10 @@ pub fn run() -> Res<()> {
                 let id = w.id();
                 app.popup(tr().title_child, DIALOG, &["dialog", "child", &id]);
             },
-            KeyCode::Char('t') => if let Some(Row::Wt(w, _)) = app.selected() {
-                if let Err(e) = open_tab(&w.clone()) {
+            KeyCode::Char('t') => if let Some(Row::Wt(w, _)) = app.selected()
+                && let Err(e) = open_tab(&w.clone()) {
                     app.error(&e);
-                }
-            },
+                },
             KeyCode::Char('h') | KeyCode::Left => { step_tab(false).ok(); }
             KeyCode::Char('l') | KeyCode::Right => { step_tab(true).ok(); }
             KeyCode::Char('n') => match app.repo_of_selected() {
@@ -1057,7 +1056,7 @@ fn wrap(s: &str, w: usize) -> Vec<String> {
         }
         while Span::raw(word).width() > w.max(1) {
             let (i, _) = word.char_indices().nth(w.max(1) / 2).unwrap_or((word.len(), ' ')); // half: wide characters fit too
-            let cut = word.char_indices().map(|c| c.0).filter(|c| Span::raw(&word[..*c]).width() <= w).last().filter(|c| *c > 0).unwrap_or(i.max(1));
+            let cut = word.char_indices().map(|c| c.0).rfind(|c| Span::raw(&word[..*c]).width() <= w).filter(|c| *c > 0).unwrap_or(i.max(1));
             out.push(std::mem::take(&mut line) + &word[..cut]);
             word = &word[cut..];
         }
@@ -1480,7 +1479,7 @@ pub fn commands() -> Res<()> {
                 // typed letter by letter, then left to read
                 let text = tr().orc[tick / 60 % tr().orc.len()];
                 let typed: String = text.chars().take(tick % 60).collect();
-                let cursor = if tick / 4 % 2 == 0 { "▏" } else { " " };
+                let cursor = if (tick / 4).is_multiple_of(2) { "▏" } else { " " };
                 art.extend([Line::default(), Line::from(vec![fg("> ", MUTED), fg(typed, FOAM), fg(cursor, FOAM)])]);
                 f.render_widget(Paragraph::new(art), side.inner(Margin::new(1, 1)));
             }

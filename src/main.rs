@@ -1,5 +1,6 @@
 mod agent;
 mod control;
+mod doctor;
 mod i18n;
 mod mark;
 mod orc;
@@ -815,7 +816,7 @@ pub fn style_ui() -> Res<()> {
     let (abyss, hull, line, foam) = (hex(theme::ABYSS), hex(theme::HULL), hex(theme::LINE), hex(theme::FOAM));
     let status = format!("bg={abyss},fg={foam}");
     for (k, v) in [("status", "on"), ("status-style", status.as_str()), ("status-left-length", "120"), ("status-right-length", "80")] {
-        tmux(&["set-option", "-t", &t, k, v])?;
+        tmux(&["set-option", "-t", &t, k, v]).ok();
     }
     let (gap, card) = (format!("bg={abyss},fg={abyss}"), format!("bg={hull}"));
     let rail = format!("#[bg={hull}#,fg={foam}#,bold]  {}  #[default]", tr().your_prs);
@@ -833,7 +834,7 @@ pub fn style_ui() -> Res<()> {
         ("pane-border-status", "top"),
         ("pane-border-format", titles.as_str()),
     ] {
-        tmux(&["set-option", "-w", "-t", &t, k, v])?;
+        tmux(&["set-option", "-w", "-t", &t, k, v]).ok(); // an older tmux lacks some
     }
     // Key tables are shared by every session: outside orcux the key goes on to the program, as if not bound.
     let exe = env::current_exe().map_err(|e| e.to_string())?;
@@ -855,7 +856,7 @@ pub fn style_ui() -> Res<()> {
         (&["œ", "M-q"], close),
     ] {
         for k in keys {
-            tmux(&["bind-key", "-n", k, "if-shell", "-F", "#{==:#{session_name},orcux}", &cmd, &format!("send-keys {k}")])?;
+            tmux(&["bind-key", "-n", k, "if-shell", "-F", "#{==:#{session_name},orcux}", &cmd, &format!("send-keys {k}")]).ok();
         }
     }
     Ok(())
@@ -1101,6 +1102,11 @@ fn cli(a: &[&str]) -> Res<()> {
         ["rail"] => tui::rail(),
         ["welcome"] => tui::welcome(),
         ["prs"] => prs::print(),
+        ["doctor"] => doctor::run_all(),
+        ["--version" | "-V" | "version"] => {
+            println!("orcux {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         ["switch"] => tui::switch(),
         ["commands"] => tui::commands(),
         ["dialog", "new", repo] => tui::dialog_new(Path::new(repo), None),

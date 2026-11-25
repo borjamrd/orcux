@@ -173,7 +173,7 @@ fn frame(t: usize) -> Frame {
                 let line = y + t / 2; // code that scrolls by
                 let (indent, len) = (line % 2, 1 + (line * 7 + lens) % 5);
                 for x in indent..(indent + len - 1).min(5) {
-                    let c = if (line * 3 + x) % 4 > 0 { b'x' } else { b'X' };
+                    let c = if !(line * 3 + x).is_multiple_of(4) { b'x' } else { b'X' };
                     f.dot(dx + (lens + x) as i32, dy + 14 + y as i32, c);
                 }
             }

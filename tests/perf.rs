@@ -25,6 +25,11 @@ fn cpu(pid: u32) -> f64 {
     String::from_utf8_lossy(&out).trim().split(':').fold(0.0, |all, x| all * 60.0 + x.parse::<f64>().unwrap())
 }
 
+/// How many times slower than a computer of one's own this one may be.
+fn room() -> u32 {
+    std::env::var("ORCUX_PERF_ROOM").ok().and_then(|r| r.parse().ok()).unwrap_or(1)
+}
+
 #[test]
 #[ignore]
 fn fifty_terminals_cost_nothing_at_rest() {
@@ -63,8 +68,8 @@ fn fifty_terminals_cost_nothing_at_rest() {
     show.sort();
     println!("{panes} panes, `orcux show` {:?}, start {start:?}, `orcux ls` {:?}, CPU sidebar {:.2} % rail {:.2} %, {} tmux processes in {WATCH} s", show[4], ls[4], used[0] * 100.0, used[1] * 100.0, calls.lines().count());
     assert!(calls.is_empty(), "tmux processes at rest:\n{calls}");
-    assert!(used.iter().all(|u| *u <= CPU), "CPU at rest: {used:?}");
-    assert!(ls[4] < Duration::from_millis(50), "`orcux ls` took {:?}", ls[4]);
-    assert!(show[4] < Duration::from_millis(100), "`orcux show` took {:?}", show[4]);
-    assert!(start < Duration::from_secs(1), "it took {start:?} to start");
+    assert!(used.iter().all(|u| *u <= CPU * f64::from(room())), "CPU at rest: {used:?}");
+    assert!(ls[4] < Duration::from_millis(50) * room(), "`orcux ls` took {:?}", ls[4]);
+    assert!(show[4] < Duration::from_millis(100) * room(), "`orcux show` took {:?}", show[4]);
+    assert!(start < Duration::from_secs(1) * room(), "it took {start:?} to start");
 }
