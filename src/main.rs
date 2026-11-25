@@ -1,7 +1,12 @@
+mod i18n;
 mod prs;
+mod theme;
 mod tui;
 
 use std::{env, fs, path::{Path, PathBuf}, process::Command, thread, time::Duration};
+
+use i18n::tr;
+use theme::hex;
 
 pub type Res<T> = Result<T, String>;
 
@@ -15,55 +20,9 @@ pub const RAIL: &str = "__prs"; // right pane: pull requests
 pub const SWITCH_KEYS: [&str; 3] = ["æ", "∑", "M-w"];
 const RAIL_MIN: u32 = 140; // narrower windows start with the rail hidden, to leave the terminal 60 columns
 
-/// Single source for `orcux help` and the `?` dialog: every new command or shortcut gets its line here.
-pub const COMMANDS: &[(&str, &[(&str, &str)])] = &[
-    ("Sidebar", &[
-        ("⏎", "abrir el worktree seleccionado"),
-        ("n", "nuevo worktree en el repo seleccionado"),
-        ("d", "borrar el worktree seleccionado"),
-        ("j / k, ↓ / ↑", "moverse por la lista"),
-        ("p", "mostrar u ocultar el panel de PRs"),
-        ("tab", "pasar al panel de PRs"),
-        ("?", "ver los comandos disponibles"),
-        ("q", "salir (los terminales siguen vivos)"),
-    ]),
-    ("En cualquier panel", &[
-        ("Opt+w", "cambiar de worktree"),
-    ]),
-    ("Panel de PRs", &[
-        ("⏎", "ir al worktree de la PR"),
-        ("w", "crear su worktree, si no existe"),
-        ("o", "abrir la PR en el navegador"),
-        ("r", "actualizar ahora"),
-        ("tab", "volver al sidebar"),
-    ]),
-    ("Terminal", &[
-        ("orcux", "abrir la interfaz (sidebar + terminal)"),
-        ("orcux new <nombre> [--repo P] [--cmd C]", "crear worktree, puertos y terminal"),
-        ("orcux rm <wt> [--force]", "borrar el worktree (conserva la rama)"),
-        ("orcux import <ruta...> [--yes]", "registrar worktrees existentes, sin moverlos"),
-        ("orcux ls", "listar los worktrees"),
-        ("orcux show <wt>", "mostrar <wt> en la interfaz"),
-        ("orcux switch", "elegir worktree en una lista (Opt+w)"),
-        ("orcux send <wt> <texto...>", "escribir texto + Enter en su terminal"),
-        ("orcux read <wt> [líneas]", "leer el final de su terminal (40 por defecto)"),
-        ("orcux env [wt]", "exports ORCUX_* (por defecto, el del cwd)"),
-        ("orcux prs", "listar tus PRs y las que esperan tu revisión"),
-        ("orcux repo add [ruta]", "registrar un repo en el sidebar"),
-        ("orcux commands", "abrir esta lista de comandos"),
-        ("orcux help", "imprimir esta ayuda"),
-    ]),
-    ("Notas", &[
-        ("<wt>", "repo/nombre, o solo el nombre si es único"),
-        ("ORCUX_PORT", "10000 + slot*100: 100 puertos por worktree"),
-        ("Importados", "borrarlos solo los quita de orcux"),
-        ("COMPOSE_PROJECT_NAME", "propio de cada worktree"),
-    ]),
-];
-
 fn help() -> String {
     let mut s = String::from("orcux: worktrees + tmux\n");
-    for (group, cmds) in COMMANDS {
+    for (group, cmds) in tr().commands {
         s += &format!("\n{group}\n");
         for (usage, desc) in *cmds {
             s += &format!("  {usage:<40} {desc}\n");
@@ -180,7 +139,7 @@ pub fn repos() -> Vec<PathBuf> {
 /// Registers the main checkout of the repo containing `p` and returns its path.
 fn add_repo(p: &Path) -> Res<PathBuf> {
     let common = git(p, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
-    let main = Path::new(&common).parent().ok_or("not a repo")?.to_path_buf();
+    let main = Path::new(&common).parent().ok_or(tr().not_repo)?.to_path_buf();
     let mut r = repos();
     if !r.contains(&main) {
         r.push(main.clone());
@@ -201,8 +160,8 @@ pub fn find(q: Option<&str>) -> Res<Wt> {
     };
     match hits.as_slice() {
         [w] => Ok((*w).clone()),
-        [] => Err(format!("no worktree {}", q.unwrap_or("for cwd"))),
-        _ => Err("ambiguous, use repo/name".into()),
+        [] => Err(q.map_or(tr().no_worktree_here.into(), tr().no_worktree)),
+        _ => Err(tr().ambiguous.into()),
     }
 }
 
@@ -223,12 +182,12 @@ pub fn create(repo: &Path, name: &str, cmd: Option<&str>) -> Res<Wt> {
     let repo = add_repo(repo)?;
     let mut wts = load();
     if wts.iter().any(|w| w.repo == repo && w.name == name) {
-        return Err(format!("{name} already exists"));
+        return Err((tr().exists)(name));
     }
     let slot = free_slot(&wts);
     let wt = Wt { repo: repo.clone(), name: name.into(), slot, at: None };
     let path = wt.path();
-    let p = path.to_str().ok_or("non-utf8 path")?;
+    let p = path.to_str().ok_or(tr().non_utf8)?;
     let has = |r: &str| git(&repo, &["rev-parse", "--verify", "--quiet", r]).is_ok();
     if has(&format!("refs/heads/{name}")) || has(&format!("refs/remotes/origin/{name}")) {
         git(&repo, &["worktree", "add", p, name])?;
@@ -267,22 +226,22 @@ fn copy_includes(repo: &Path, dst: &Path) -> Res<()> {
 fn importable(p: &Path, wts: &[Wt]) -> Res<Wt> {
     let p = p.canonicalize().map_err(|e| e.to_string())?;
     let out = git(&p, &["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir"])
-        .map_err(|_| "no es un worktree de git")?;
-    let [top, dir, common] = out.lines().collect::<Vec<_>>()[..] else { return Err("no es un worktree de git".into()) };
+        .map_err(|_| tr().not_worktree)?;
+    let [top, dir, common] = out.lines().collect::<Vec<_>>()[..] else { return Err(tr().not_worktree.into()) };
     if Path::new(top) != p {
-        return Err("no es la raíz de un worktree".into());
+        return Err(tr().not_root.into());
     }
     if dir == common {
-        return Err("es la carpeta principal del repo".into());
+        return Err(tr().main_checkout.into());
     }
-    let repo = Path::new(common).parent().ok_or("repo sin carpeta")?.to_path_buf();
+    let repo = Path::new(common).parent().ok_or(tr().no_folder)?.to_path_buf();
     let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
     if wts.iter().any(|w| w.path().canonicalize().is_ok_and(|q| q == p)) {
-        return Err("ya está en orcux".into());
+        return Err(tr().registered.into());
     }
     let w = Wt { repo, name, slot: 0, at: Some(p) };
     match wts.iter().find(|x| x.id() == w.id()) {
-        Some(_) => Err(format!("ya hay un {}", w.id())),
+        Some(_) => Err((tr().id_taken)(&w.id())),
         None => Ok(w),
     }
 }
@@ -307,9 +266,9 @@ fn import(paths: &[&str], yes: bool) -> Res<()> {
     }
     if yes {
         save(&wts)?;
-        println!("{n} importados");
+        println!("{}", (tr().imported)(n));
     } else {
-        println!("{n} por importar. Repite con --yes para registrarlos.");
+        println!("{}", (tr().to_import)(n));
     }
     Ok(())
 }
@@ -325,8 +284,8 @@ pub fn remove(w: &Wt, force: bool) -> Res<()> {
     } else {
         git(&w.repo, &["worktree", "prune"])?;
     }
-    if let Some(p) = pane_of(&w.id()) {
-        tmux(&["kill-pane", "-t", &p])?;
+    for p in tabs(&w.id()) {
+        tmux(&["kill-pane", "-t", &p.pane])?;
     }
     save(&load().into_iter().filter(|x| x != w).collect::<Vec<_>>())?;
     if tmux(&["has-session", "-t", UI]).is_ok() {
@@ -337,23 +296,60 @@ pub fn remove(w: &Wt, force: bool) -> Res<()> {
 
 // ---------- tmux ----------
 
-/// (pane_id, @wt marker, current command) for every pane on the server.
-pub fn panes() -> Vec<(String, String, String)> {
-    tmux(&["list-panes", "-a", "-F", "#{pane_id}\t#{@orcux}\t#{pane_current_command}"]).unwrap_or_default()
-        .lines()
-        .filter_map(|l| {
-            let mut p = l.split('\t');
-            Some((p.next()?.into(), p.next()?.into(), p.next().unwrap_or("").into()))
+/// A pane that orcux marked. A worktree has one per tab; `tab` is its number, which never changes.
+pub struct Pane {
+    pub pane: String,
+    pub wt: String,
+    pub tab: u32,
+    /// the tab to show when its worktree is shown
+    pub on: bool,
+    pub busy: bool,
+    pub cmd: String,
+}
+
+pub fn panes() -> Vec<Pane> {
+    let f = "#{pane_id}\t#{@orcux}\t#{@orcux_tab}\t#{@orcux_on}\t#{@orcux_busy}\t#{pane_current_command}";
+    tmux(&["list-panes", "-a", "-F", f]).unwrap_or_default().lines()
+        .map(|l| {
+            let mut p = l.split('\t').map(String::from);
+            let mut next = || p.next().unwrap_or_default();
+            Pane { pane: next(), wt: next(), tab: next().parse().unwrap_or(1), on: next() == "1", busy: next() == "1", cmd: next() }
         })
+        .filter(|p| !p.wt.is_empty())
         .collect()
 }
 
+pub fn tabs(id: &str) -> Vec<Pane> {
+    let mut t: Vec<Pane> = panes().into_iter().filter(|p| p.wt == id).collect();
+    t.sort_by_key(|p| p.tab);
+    t
+}
+
+/// The worktree's active tab.
 fn pane_of(id: &str) -> Option<String> {
-    panes().into_iter().find(|p| p.1 == id).map(|p| p.0)
+    let t = tabs(id);
+    t.iter().find(|p| p.on).or(t.first()).map(|p| p.pane.clone())
+}
+
+/// "wt" or "wt:2" (git refs cannot contain ':').
+fn target(q: &str) -> Res<(Wt, Option<u32>)> {
+    match q.rsplit_once(':').and_then(|(w, n)| Some((w, n.parse().ok()?))) {
+        Some((w, n)) => Ok((find(Some(w))?, Some(n))),
+        None => Ok((find(Some(q))?, None)),
+    }
+}
+
+/// The pane of that tab, or of the active one, which is opened if there is none.
+fn pane_at(w: &Wt, tab: Option<u32>) -> Res<String> {
+    let Some(n) = tab else { return ensure_pane(w) };
+    let t = tabs(&w.id()).into_iter().find(|p| p.tab == n);
+    t.map(|p| p.pane).ok_or_else(|| (tr().no_tab)(&format!("{}:{n}", w.id())))
 }
 
 fn spawn(w: &Wt) -> Res<String> {
     let (id, path) = (w.id(), w.path().to_string_lossy().to_string());
+    let taken: Vec<u32> = tabs(&id).iter().map(|p| p.tab).collect();
+    let tab = (1..).find(|n| !taken.contains(n)).unwrap().to_string();
     let mut a: Vec<String> = if tmux(&["has-session", "-t", &format!("={BG}")]).is_ok() {
         vec!["new-window".into(), "-d".into(), "-t".into(), format!("={BG}:")]
     } else {
@@ -364,6 +360,7 @@ fn spawn(w: &Wt) -> Res<String> {
         a.extend(["-e".into(), e]);
     }
     let pane = tmux(&a.iter().map(String::as_str).collect::<Vec<_>>())?;
+    tmux(&["set-option", "-p", "-t", &pane, "@orcux_tab", &tab])?;
     tmux(&["set-option", "-p", "-t", &pane, "@orcux", &id])?;
     Ok(pane)
 }
@@ -371,7 +368,7 @@ fn spawn(w: &Wt) -> Res<String> {
 fn ensure_pane(w: &Wt) -> Res<String> {
     match pane_of(&w.id()) {
         Some(p) => Ok(p),
-        None if !w.path().exists() => Err(format!("la carpeta ya no existe: {}", w.path().display())),
+        None if !w.path().exists() => Err((tr().gone_at)(&w.path().to_string_lossy())),
         None => spawn(w),
     }
 }
@@ -465,6 +462,14 @@ pub fn sync_rail() -> Res<()> {
     }
 }
 
+/// Restarts the sidebar and the rail, if they are open. Terminals are not touched.
+fn restart_panes() -> Res<()> {
+    for p in [SIDEBAR, RAIL].into_iter().filter_map(ui_pane) {
+        tmux(&["respawn-pane", "-k", "-t", &p])?;
+    }
+    Ok(())
+}
+
 pub fn toggle_rail() -> Res<()> {
     let choice = if ui_pane(RAIL).is_some() { "off" } else { "on" };
     tmux(&["set-option", "-t", &format!("{UI}:"), "@orcux_prs", choice])?;
@@ -473,32 +478,56 @@ pub fn toggle_rail() -> Res<()> {
 
 /// Moves the focus to the pane with that marker, or to the terminal when it is not open.
 pub fn focus(mark: &str) -> Res<()> {
-    let pane = ui_pane(mark).or_else(|| terminal_pane().map(|p| p.0)).ok_or("no pane")?;
+    let pane = ui_pane(mark).or_else(|| terminal_pane().map(|p| p.0)).ok_or(tr().no_pane)?;
     tmux(&["select-pane", "-t", &pane]).map(|_| ())
 }
 
 /// Colors and status bar of the orcux session only; the user's other sessions keep theirs.
 pub fn style_ui() -> Res<()> {
     let t = format!("{UI}:");
-    for (k, v) in [("status", "on"), ("status-style", "bg=#131d22,fg=#e8f0f2"), ("status-left-length", "120"), ("status-right-length", "80")] {
+    let (abyss, hull, line, foam, muted) = (hex(theme::ABYSS), hex(theme::HULL), hex(theme::LINE), hex(theme::FOAM), hex(theme::MUTED));
+    let status = format!("bg={abyss},fg={foam}");
+    for (k, v) in [("status", "on"), ("status-style", status.as_str()), ("status-left-length", "120"), ("status-right-length", "80")] {
         tmux(&["set-option", "-t", &t, k, v])?;
     }
+    let (gap, card) = (format!("bg={abyss},fg={abyss}"), format!("bg={hull}"));
+    let rail = format!("#[bg={hull}#,fg={foam}#,bold]  {}  #[default]", tr().your_prs);
+    let name = format!("#[fg={muted}]orcux");
+    let titles = format!("#{{?#{{==:#{{@orcux}},{SIDEBAR}}},{name},#{{?#{{==:#{{@orcux}},{RAIL}}},{rail},#{{@orcux_bar}}}}}}");
     for (k, v) in [
         ("window-status-format", ""),
         ("window-status-current-format", ""),
-        ("pane-border-style", "fg=#5f7781"),
-        ("pane-active-border-style", "fg=#93a8b0"),
+        ("pane-border-lines", "spaces"), // gaps instead of lines
+        ("pane-border-style", gap.as_str()),
+        ("pane-active-border-style", gap.as_str()),
+        ("window-style", card.as_str()),
+        ("pane-border-status", "top"),
+        ("pane-border-format", titles.as_str()),
     ] {
         tmux(&["set-option", "-w", "-t", &t, k, v])?;
     }
     // Key tables are shared by every session: outside orcux the key goes on to the program, as if not bound.
     let exe = env::current_exe().map_err(|e| e.to_string())?;
     let open = format!(
-        "display-popup -E -T ' Worktrees ' -w 60% -h 50% -s 'bg=#131d22,fg=#e8f0f2' -S 'fg=#5f7781' \"'{}' switch\"",
+        "display-popup -E -b rounded -T '#[fg={foam}] Worktrees ' -w 60% -h 50% -s 'bg={hull},fg={foam}' -S 'bg={hull},fg={line}' \"'{}' switch\"",
         exe.display()
     );
-    for k in SWITCH_KEYS {
-        tmux(&["bind-key", "-n", k, "if-shell", "-F", "#{==:#{session_name},orcux}", &open, &format!("send-keys {k}")])?;
+    let close = format!(
+        "display-popup -E -b rounded -T '#[fg={foam}] {} ' -w 60% -h 10 -s 'bg={hull},fg={foam}' -S 'bg={hull},fg={line}' \"'{}' dialog close\"",
+        tr().title_close, exe.display()
+    );
+    // run-shell would print any output or failure over the pane
+    let tab = |what: &str| format!("run-shell -b \"'{}' tab {what} >/dev/null 2>&1 || true\"", exe.display());
+    for (keys, cmd) in [
+        (&SWITCH_KEYS[..], open),
+        (&["†", "M-t"], tab("new")),
+        (&["å", "M-a"], tab("prev")),
+        (&["∂", "M-d"], tab("next")),
+        (&["œ", "M-q"], close),
+    ] {
+        for k in keys {
+            tmux(&["bind-key", "-n", k, "if-shell", "-F", "#{==:#{session_name},orcux}", &cmd, &format!("send-keys {k}")])?;
+        }
     }
     Ok(())
 }
@@ -514,9 +543,13 @@ pub fn open_url(url: &str) -> Res<()> {
 }
 
 pub fn show(w: &Wt) -> Res<()> {
+    show_tab(w, None)
+}
+
+pub fn show_tab(w: &Wt, tab: Option<u32>) -> Res<()> {
     ensure_ui()?;
-    let pane = ensure_pane(w)?;
-    let (right, mark) = terminal_pane().ok_or("no terminal pane")?;
+    let pane = pane_at(w, tab)?;
+    let (right, mark) = terminal_pane().ok_or(tr().no_pane)?;
     if pane != right {
         tmux(&["swap-pane", "-d", "-s", &pane, "-t", &right])?;
         if mark.is_empty() {
@@ -524,6 +557,12 @@ pub fn show(w: &Wt) -> Res<()> {
         }
     }
     touch_recent(&w.id());
+    for p in tabs(&w.id()) {
+        if p.on != (p.pane == pane) {
+            tmux(&["set-option", "-p", "-t", &p.pane, "@orcux_on", if p.on { "0" } else { "1" }])?;
+        }
+    }
+    set_tab_bar(&tab_bar());
     tmux(&["select-pane", "-t", &pane]).map(|_| ())
 }
 
@@ -534,8 +573,9 @@ pub fn popup(title: &str, want: (u32, u32), args: &[&str]) -> Res<()> {
     let size = tmux(&["display-message", "-p", "#{client_width} #{client_height}"])?;
     let (w, h) = size.split_once(' ').unwrap_or_default();
     let fit = |have: &str, want: u32| have.parse().map_or(want, |n: u32| n.min(want)).to_string();
-    let (w, h, title) = (fit(w, want.0), fit(h, want.1), format!(" {title} "));
-    let mut a = vec!["display-popup", "-E", "-s", "bg=#131d22,fg=#e8f0f2", "-S", "fg=#5f7781", "-T", &title, "-w", &w, "-h", &h, exe.to_str().ok_or("non-utf8 path")?];
+    let (w, h, title) = (fit(w, want.0), fit(h, want.1), format!("#[fg={}] {title} ", hex(theme::FOAM)));
+    let (style, edge) = (format!("bg={},fg={}", hex(theme::HULL), hex(theme::FOAM)), format!("bg={},fg={}", hex(theme::HULL), hex(theme::LINE)));
+    let mut a = vec!["display-popup", "-E", "-b", "rounded", "-s", &style, "-S", &edge, "-T", &title, "-w", &w, "-h", &h, exe.to_str().ok_or(tr().non_utf8)?];
     a.extend(args); // several args = exec without a shell, so no quoting
     tmux(&a).map(|_| ())
 }
@@ -568,10 +608,90 @@ pub fn set_busy(pane: &str, busy: bool) {
     tmux(&["set-option", "-p", "-t", pane, "@orcux_busy", if busy { "1" } else { "0" }]).ok();
 }
 
-pub fn busy_ids() -> Vec<String> {
-    tmux(&["list-panes", "-a", "-F", "#{@orcux}\t#{@orcux_busy}"]).unwrap_or_default().lines()
-        .filter_map(|l| l.strip_suffix("\t1").map(String::from))
-        .collect()
+/// The tab of a worktree where an agent runs: the active one if it does.
+pub fn agent_tab(w: &Wt) -> Option<Pane> {
+    let mut t: Vec<Pane> = tabs(&w.id()).into_iter().filter(|p| ["claude", "codex"].contains(&tui::program(&p.cmd))).collect();
+    t.sort_by_key(|p| !p.on);
+    t.into_iter().next()
+}
+
+/// Leaves text in an agent's prompt, without Enter. As a paste, not as keys: if a menu is open (a permission
+/// request, say), keys could answer it.
+pub fn paste_into(pane: &str, text: &str) -> Res<()> {
+    tmux(&["set-buffer", "-b", "orcux", "--", text])?;
+    tmux(&["paste-buffer", "-p", "-d", "-b", "orcux", "-t", pane]).map(|_| ())
+}
+
+/// The worktree on screen, and which of its tabs.
+pub fn visible() -> Res<(Wt, u32)> {
+    let (pane, id) = terminal_pane().ok_or(tr().no_pane)?;
+    let w = load().into_iter().find(|w| w.id() == id).ok_or(tr().no_visible)?;
+    let t = tabs(&id).into_iter().find(|p| p.pane == pane).ok_or(tr().no_visible)?;
+    Ok((w, t.tab))
+}
+
+/// Opens a tab without showing it.
+fn new_tab(w: &Wt, cmd: Option<&str>) -> Res<u32> {
+    if !w.path().exists() {
+        return Err((tr().gone_at)(&w.path().to_string_lossy()));
+    }
+    let pane = spawn(w)?;
+    if let Some(c) = cmd {
+        type_into(&pane, c)?;
+    }
+    Ok(tabs(&w.id()).into_iter().find(|p| p.pane == pane).map_or(1, |p| p.tab))
+}
+
+pub fn open_tab(w: &Wt) -> Res<()> {
+    let n = new_tab(w, None)?;
+    show_tab(w, Some(n))
+}
+
+/// Shows the next tab of the visible worktree, or the previous one.
+pub fn step_tab(forward: bool) -> Res<()> {
+    let (w, n) = visible()?;
+    let t = tabs(&w.id());
+    let i = t.iter().position(|p| p.tab == n).unwrap_or(0);
+    let to = (i + if forward { 1 } else { t.len() - 1 }) % t.len();
+    if to == i { Ok(()) } else { show_tab(&w, Some(t[to].tab)) }
+}
+
+pub fn close_tab(w: &Wt, n: u32) -> Res<()> {
+    let pane = pane_at(w, Some(n))?;
+    let on_screen = terminal_pane().is_some_and(|p| p.0 == pane);
+    let t = tabs(&w.id());
+    let i = t.iter().position(|p| p.tab == n).unwrap_or(0);
+    let neighbor = t.get(i + 1).or(i.checked_sub(1).and_then(|j| t.get(j)));
+    if on_screen && let Some(p) = neighbor {
+        show_tab(w, Some(p.tab))?; // first, so that the layout never lacks a terminal
+    }
+    tmux(&["kill-pane", "-t", &pane])?;
+    if on_screen && neighbor.is_none() {
+        ensure_ui()?;
+    }
+    set_tab_bar(&tab_bar());
+    Ok(())
+}
+
+/// The tabs of the visible worktree, as a tmux format for the border above the terminal.
+pub fn tab_bar() -> String {
+    let Some((pane, id)) = terminal_pane().filter(|p| !p.1.is_empty()) else { return String::new() };
+    let one = |p: &Pane| {
+        let cmd = tui::program(&p.cmd).replace('#', "##");
+        let (hull, foam, muted) = (hex(theme::HULL), hex(theme::FOAM), hex(theme::MUTED));
+        let dot = if p.busy { format!("#[fg={}]● ", hex(theme::CURRENT)) } else { String::new() };
+        if p.pane == pane {
+            // same fill as the terminal below it: they read as one card
+            format!("#[bg={hull},fg={muted}]  {} {dot}#[fg={foam},bold]{cmd}  #[default]", p.tab)
+        } else {
+            format!("#[fg={muted}]  {} {dot}#[fg={muted}]{cmd}  #[default]", p.tab)
+        }
+    };
+    tabs(&id).iter().map(one).collect::<String>() + &format!("#[fg={}] +", hex(theme::LINE))
+}
+
+pub fn set_tab_bar(bar: &str) {
+    tmux(&["set-option", "-t", &format!("{UI}:"), "@orcux_bar", bar]).ok();
 }
 
 fn attach() -> Res<()> {
@@ -608,6 +728,8 @@ fn cli(a: &[&str]) -> Res<()> {
         ["dialog", "new", repo] => tui::dialog_new(Path::new(repo)),
         ["dialog", "rm", id] => tui::dialog_rm(&find(Some(id))?),
         ["dialog", "pr", repo, branch, label] => tui::dialog_pr(Path::new(repo), branch, label),
+        ["dialog", "view", url] => tui::dialog_view(url),
+        ["dialog", "close"] => tui::dialog_close(),
         ["dialog", "error", text] => tui::dialog_error(text),
         ["new", name, rest @ ..] => {
             let repo = flag(rest, "--repo").map(PathBuf::from).unwrap_or(env::current_dir().map_err(|e| e.to_string())?);
@@ -620,19 +742,64 @@ fn cli(a: &[&str]) -> Res<()> {
             let paths: Vec<&str> = rest.iter().copied().filter(|p| *p != "--yes").collect();
             import(&paths, rest.contains(&"--yes"))
         }
+        ["icons"] => {
+            println!("{}", (tr().icons_now)(theme::icons(), &theme::ICONS.join(", ")));
+            Ok(())
+        }
+        ["icons", which] if theme::ICONS.contains(which) => {
+            theme::set_icons(which)?;
+            restart_panes()
+        }
+        ["lang"] => {
+            println!("{}", (tr().lang_now)(i18n::code(), &i18n::codes()));
+            Ok(())
+        }
+        ["lang", code] => {
+            let text = i18n::set(code)?;
+            println!("{}", (text.lang_now)(code, &i18n::codes()));
+            restart_panes()
+        }
         ["ls"] => {
-            let live: Vec<String> = panes().into_iter().map(|p| p.1).collect();
+            let live: Vec<String> = panes().into_iter().map(|p| p.wt).collect();
             for w in load() {
                 let st = if live.contains(&w.id()) { "up" } else { "-" };
                 println!("{:<40} :{:<6} {:<3} {}", w.id(), w.port(), st, w.path().display());
             }
             Ok(())
         }
-        ["show", q] => show(&find(Some(q))?),
-        ["send", q, text @ ..] if !text.is_empty() => type_into(&ensure_pane(&find(Some(q))?)?, &text.join(" ")),
+        ["show", q] => {
+            let (w, n) = target(q)?;
+            show_tab(&w, n)
+        }
+        ["tab", "new"] => open_tab(&visible()?.0),
+        ["tab", "new", q, rest @ ..] => {
+            let w = find(Some(q))?;
+            println!("{}:{}", w.id(), new_tab(&w, flag(rest, "--cmd"))?);
+            Ok(())
+        }
+        ["tab", "ls", q] => {
+            for p in tabs(&find(Some(q))?.id()) {
+                println!("{}:{:<3} {} {}", p.wt, p.tab, if p.on { "*" } else { " " }, tui::program(&p.cmd));
+            }
+            Ok(())
+        }
+        ["tab", "close", q] => {
+            let (w, n) = target(q)?;
+            close_tab(&w, n.ok_or(tr().which_tab)?)
+        }
+        ["tab", "next"] => step_tab(true),
+        ["tab", "prev"] => step_tab(false),
+        ["send", q, text @ ..] if !text.is_empty() => {
+            let (w, n) = target(q)?;
+            type_into(&pane_at(&w, n)?, &text.join(" "))
+        }
         ["read", q, rest @ ..] => {
             let n = rest.first().and_then(|n| n.parse::<u32>().ok()).unwrap_or(40);
-            let pane = pane_of(&find(Some(q))?.id()).ok_or("terminal not running")?;
+            let (w, tab) = target(q)?;
+            let pane = match tab {
+                Some(_) => pane_at(&w, tab)?,
+                None => pane_of(&w.id()).ok_or(tr().not_running)?,
+            };
             println!("{}", tmux(&["capture-pane", "-p", "-J", "-t", &pane, "-S", &format!("-{n}")])?.trim_end());
             Ok(())
         }

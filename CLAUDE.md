@@ -10,22 +10,26 @@ It looks like herdr (herdr.dev: Rust + ratatui + its own VT), but orcux has work
 ## Commands
 
 - `cargo build --release`: the binary is `target/release/orcux`, linked from `~/.local/bin/orcux`.
-- `cargo test`: PR classification and parsing.
-- `orcux help`: lists the subcommands. Same table (`COMMANDS` in `main.rs`) feeds the sidebar's `?` dialog (`orcux commands` in a tmux popup): every new command or shortcut goes there. UI text is in Spanish for now.
+- `cargo test`: PR classification and parsing, language choice, text widths per language.
+- `orcux help`: lists the subcommands. The same table (`commands` in `src/i18n/*.rs`) feeds the sidebar's `?` dialog (`orcux commands` in a tmux popup): every new command or shortcut goes there, in every language.
 
-## Architecture (3 files, 1 dependency: ratatui)
+## Architecture (1 dependency: ratatui)
 
 - `src/main.rs`: CLI, git, tmux and state.
-- `src/tui.rs`: the sidebar (`orcux sidebar`, the UI's left pane), the PR rail (`orcux rail`, right pane) and the dialogs. Colors are the constants at the top (design system "orcux").
+- `src/tui.rs`: the sidebar (`orcux sidebar`, the UI's left pane), the PR rail (`orcux rail`, right pane) and the dialogs. Colors come from `src/theme.rs` (design system "orcux"), also for tmux styles.
+- `src/i18n/`: every text the user sees, one file per language (`en`, `es`). Never write a user-facing literal elsewhere: add a field to `Text` (a missing translation does not compile) and use `tr().field`; texts with data are functions. Language: `ORCUX_LANG`, then `orcux lang <code>` (saved in `lang`), then the system, then English. The `every_language_fits` test checks widths.
 - `src/prs.rs`: open PRs of the registered repos, read-only, through `gh` (JSON reduced to TSV with `--jq`, so no JSON crate).
 
 Model:
 - tmux session `orcux` holds 1 window: sidebar (36 columns), visible terminal, and the PR rail (44 columns). The rail is shown by default from 140 columns; `p` overrides that in the session option `@orcux_prs`.
 - Only the sidebar process opens the rail on its own, fetches PRs (every 60 s, into `~/.local/state/orcux/prs.tsv`) and writes the tmux status bar. Session styling is limited to the `orcux` session.
-- tmux session `orcux-bg` holds one window per worktree, with its terminal.
+- tmux session `orcux-bg` holds one window per hidden tab. A worktree has one pane per tab: `@orcux_tab` is its number (stable, lowest free) and `@orcux_on=1` marks the active one. The tabs of the visible worktree are drawn in the tmux border above the terminal (`@orcux_bar`). `<wt>:<n>` targets a tab in `show`, `send` and `read`.
+- If the visible terminal ends (`exit`), the sidebar shows another of its tabs or the placeholder (`heal`).
+- Look: soft fills and gaps (`pane-border-lines spaces`), no lines; rounded outlines only in popups. Badges have rounded ends with `orcux icons nerd` (Powerline glyphs); never half blocks, which Terminal.app draws shorter than the cell.
 - Each worktree pane carries the pane option `@orcux=<repo>/<name>`; the sidebar carries `@orcux=__sidebar` and the rail `@orcux=__prs`. Panes are always found through that marker, never by index.
 - Showing a worktree = `swap-pane` between its pane and the right-hand one. If the one leaving is the placeholder (empty `@orcux`), it is killed.
 - State in plain files in `~/.local/state/orcux/`: `worktrees.tsv` (repo, name, slot), `repos`, `recent` (ids by last `show`) and `prs.tsv` (cache).
+- Opt+t/a/d/q: new, previous, next and close tab. Only letters whose Option character is the same on the Spanish and US layouts (Opt+x on Spanish types `∑`, which is Opt+w on US).
 - Opt+w opens `orcux switch` in a popup. Terminal.app cannot send Cmd keys, and without Option as Meta it types a character (`æ` on the Spanish layout), so those characters are bound in the root table (`SWITCH_KEYS`, set by the sidebar at start). tmux key tables are global: the binding checks the session name and passes the key on elsewhere. The sidebar marks working panes with `@orcux_busy`, for processes that do not watch screens.
 - Prompts and errors are popups, never sidebar text: the sidebar calls `popup()`, which runs `orcux dialog new|rm|error` (internal) in a centered `display-popup` and blocks until it closes.
 - Worktrees go in `~/orcux/<repo>/<name>`. `orcux import` registers existing ones where they are (4th column of `worktrees.tsv`): they are named after their folder, never moved, and `rm`/`d` only unregisters them, even with `--force`. PRs match a worktree by its checked-out branch, read from git's files. Each pane gets `ORCUX_PORT=10000+slot*100`, `ORCUX_ID`, `ORCUX_SLOT` and `COMPOSE_PROJECT_NAME` via `tmux -e`.
@@ -39,6 +43,8 @@ Model:
 - `send` waits 150 ms between the text and Enter: TUIs like claude treat text+Enter in one burst as a paste.
 - `display-popup` fails if it is larger than the client (no clamping), so `popup()` caps it to the client size. A detach closes the popup with a non-zero exit and empty stderr: not an error.
 - tmux scales panes proportionally when the client attaches or resizes: `ensure_ui` pins the sidebar to 36 columns with a `window-resized` hook (dragging the border by hand still works).
+- `orcux dialog view <url>` is the dialog of one PR (Enter or click in the rail): it loads its details in a thread. Read-only towards GitHub. `a` pastes a one-line prompt into the worktree's agent WITHOUT Enter and as a bracketed paste: keys could answer an open permission menu. Text by other people is stripped of control characters and quoted as data.
+- Conflicting files are not in GitHub's API: both branches are fetched and merged in memory (`git merge-tree`).
 - PRs are asked once per logged-in `gh` account (token passed by environment, the active account is never switched) because repos belong to different accounts.
 - `w` on a PR fetches its branch before creating: an unknown branch would start from `origin/HEAD`.
 - `rm` runs `git worktree remove` BEFORE killing the pane, so that a dirty worktree fails without losing the terminal.

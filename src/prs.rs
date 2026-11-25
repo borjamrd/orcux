@@ -1,6 +1,6 @@
 //! Open pull requests of the registered repos, read-only, through the `gh` CLI.
 //! The sidebar fetches them into a cache file; the rail and the sidebar draw from it.
-use crate::*;
+use crate::{i18n::tr, *};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const QUERY: &str = "query($m:String!,$r:String!){\
@@ -41,6 +41,8 @@ pub struct Pr {
     pub ok: u32,
     pub failed: u32,
     pub total: u32,
+    /// the gh account that can read it
+    pub login: String,
     /// local main checkout
     pub path: PathBuf,
 }
@@ -85,7 +87,7 @@ pub fn ago(secs: u64) -> String {
 impl Pr {
     fn parse(l: &str) -> Option<Pr> {
         let f: Vec<&str> = l.split('\t').collect();
-        let [kind, repo, number, title, url, draft, decision, mergeable, branch, fork, author, ci, age, ok, failed, total, path] = f[..] else {
+        let [kind, repo, number, title, url, draft, decision, mergeable, branch, fork, author, ci, age, ok, failed, total, login, path] = f[..] else {
             return None;
         };
         Some(Pr {
@@ -105,6 +107,7 @@ impl Pr {
             ok: ok.parse().ok()?,
             failed: failed.parse().ok()?,
             total: total.parse().ok()?,
+            login: login.into(),
             path: path.into(),
         })
     }
@@ -128,23 +131,23 @@ impl Pr {
         let pending = matches!(self.ci.as_str(), "PENDING" | "EXPECTED");
         let ci = format!("CI {}/{}", self.ok, self.total);
         if self.review {
-            (Group::Yours, State::Waiting, format!("te pide revisión {}", self.author))
+            (Group::Yours, State::Waiting, (tr().asks_review)(&self.author))
         } else if self.draft {
-            (Group::Going, State::Idle, if red { "borrador, CI falla".into() } else { "borrador".into() })
+            (Group::Going, State::Idle, if red { tr().draft_red.into() } else { tr().draft.into() })
         } else if self.mergeable == "CONFLICTING" {
-            (Group::Yours, State::Failed, "conflictos con la base".into())
+            (Group::Yours, State::Failed, tr().conflicts.into())
         } else if red {
-            (Group::Yours, State::Failed, format!("CI falla: {} de {}", self.failed, self.total))
+            (Group::Yours, State::Failed, (tr().ci_red)(self.failed as usize, self.total as usize))
         } else if self.decision == "CHANGES_REQUESTED" {
-            (Group::Yours, State::Waiting, "cambios pedidos".into())
+            (Group::Yours, State::Waiting, tr().changes.into())
         } else if pending {
             (Group::Going, State::Working, ci)
         } else if self.decision == "APPROVED" {
-            (Group::Ready, State::Done, if self.total > 0 { format!("aprobada, {ci}") } else { "aprobada".into() })
+            (Group::Ready, State::Done, if self.total > 0 { format!("{}, {ci}", tr().approved) } else { tr().approved.into() })
         } else if self.decision == "REVIEW_REQUIRED" {
-            (Group::Going, State::Idle, "espera revisión".into())
+            (Group::Going, State::Idle, tr().waiting.into())
         } else {
-            (Group::Going, State::Idle, "abierta".into())
+            (Group::Going, State::Idle, tr().open.into())
         }
     }
 }
@@ -174,6 +177,11 @@ fn gh(args: &[&str], token: Option<&str>) -> Res<String> {
     }
 }
 
+/// None: the account is only known through the environment.
+fn token(login: &str) -> Option<String> {
+    gh(&["auth", "token", "--user", login], Some("")).ok()
+}
+
 fn fetch() -> Res<Vec<String>> {
     let repos: Vec<(PathBuf, String)> = repos().into_iter()
         .filter_map(|p| Some((p.clone(), slug(&git(&p, &["remote", "get-url", "origin"]).ok()?)?)))
@@ -187,9 +195,9 @@ fn fetch() -> Res<Vec<String>> {
     let mut logins: Vec<&str> = logins.lines().collect();
     logins.sort();
     logins.dedup();
-    let (mut lines, mut good, mut err) = (vec![], false, "gh: ninguna cuenta con sesión".to_string());
-    for l in logins {
-        let token = gh(&["auth", "token", "--user", l], Some("")).ok(); // None: only known through the environment
+    let (mut lines, mut good, mut err) = (vec![], false, tr().no_account.to_string());
+    for login in logins {
+        let token = token(login);
         let q = |who: &str| format!("is:pr is:open archived:false {who}:@me{scope}");
         let (m, r) = (format!("m={}", q("author")), format!("r={}", q("user-review-requested")));
         match gh(&["api", "graphql", "-f", &format!("query={QUERY}"), "-f", &m, "-f", &r, "--jq", JQ], token.as_deref()) {
@@ -199,7 +207,7 @@ fn fetch() -> Res<Vec<String>> {
                     let f: Vec<&str> = l.split('\t').collect();
                     let path = f.get(1).and_then(|s| repos.iter().find(|r| r.1.eq_ignore_ascii_case(s)));
                     if let Some((p, _)) = path {
-                        lines.push(format!("{l}\t{}", p.display()));
+                        lines.push(format!("{l}\t{login}\t{}", p.display()));
                     }
                 }
             }
@@ -215,6 +223,116 @@ fn fetch() -> Res<Vec<String>> {
         new
     });
     if good { Ok(lines) } else { Err(err) }
+}
+
+const DETAIL: &str = "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){\
+  additions deletions changedFiles baseRefName headRefName body \
+  files(first:100){nodes{path additions deletions}} \
+  latestReviews(first:30){nodes{author{login} state}} \
+  reviewRequests(first:30){nodes{requestedReviewer{__typename ... on User{login}}}} \
+  reviewThreads(first:100){nodes{isResolved path line comments(first:1){nodes{author{login} body}}}} \
+  commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{__typename \
+    ... on CheckRun{name status conclusion} ... on StatusContext{context state}}}}}}}}}}";
+
+/// One tagged TSV line per thing. Comments lose their line breaks; the description keeps them.
+const DETAIL_JQ: &str = r#"
+def flat: (. // "") | gsub("[[:space:]]+"; " ") | .[0:400];
+.data.repository.pullRequest as $p | (
+  ["M", $p.additions, $p.deletions, $p.changedFiles, $p.baseRefName, $p.headRefName],
+  (($p.commits.nodes[0].commit.statusCheckRollup.contexts.nodes // [])[]
+    | if .__typename == "CheckRun" then
+        ["C", (if .status != "COMPLETED" then "pending"
+               elif (.conclusion as $c | ["FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED", "CANCELLED"] | index($c)) != null then "fail"
+               else "ok" end), (.name | flat)]
+      else
+        ["C", (if .state == "SUCCESS" then "ok" elif .state == "PENDING" or .state == "EXPECTED" then "pending" else "fail" end), (.context | flat)]
+      end | select(.[1] != "ok")),
+  ($p.latestReviews.nodes[] | ["R", .state, (.author.login // "?")]),
+  ($p.reviewRequests.nodes[] | ["R", "PENDING", (.requestedReviewer.login // "")]),
+  ($p.reviewThreads.nodes[] | select(.isResolved | not)
+    | ["T", .path, (.line // 0), (.comments.nodes[0].author.login // "?"), (.comments.nodes[0].body | flat)]),
+  ($p.files.nodes[] | ["F", .path, .additions, .deletions]),
+  (($p.body // "") | gsub("\r"; "") | gsub("(?s)<!--.*?-->"; "") | .[0:4000] | split("\n")[] | ["B", .])
+) | @tsv"#;
+
+#[derive(Default)]
+pub struct Thread {
+    pub path: String,
+    pub line: u32,
+    pub author: String,
+    pub text: String,
+}
+
+/// What the dialog of a PR shows besides what the list already knows.
+#[derive(Default)]
+pub struct Detail {
+    pub added: u32,
+    pub deleted: u32,
+    pub changed: usize,
+    pub base: String,
+    pub head: String,
+    pub failing: Vec<String>,
+    pub pending: Vec<String>,
+    /// (state, login; empty for a team)
+    pub reviews: Vec<(String, String)>,
+    pub threads: Vec<Thread>,
+    pub files: Vec<(String, u32, u32)>,
+    pub body: Vec<String>,
+    /// files that conflict with the base
+    pub conflicts: Vec<String>,
+}
+
+impl Detail {
+    fn parse(tsv: &str) -> Detail {
+        // written by other people: no control characters may reach the terminal or an agent's prompt
+        let clean = |s: &str| s.chars().filter(|c| !c.is_control()).collect::<String>();
+        let mut d = Detail::default();
+        for l in tsv.lines() {
+            let f: Vec<String> = l.split('\t').map(clean).collect();
+            let n = |i: usize| f.get(i).and_then(|s| s.parse().ok()).unwrap_or(0u32);
+            let s = |i: usize| f.get(i).cloned().unwrap_or_default();
+            match s(0).as_str() {
+                "M" => (d.added, d.deleted, d.changed, d.base, d.head) = (n(1), n(2), n(3) as usize, s(4), s(5)),
+                "C" if s(1) == "fail" => d.failing.push(s(2)),
+                "C" => d.pending.push(s(2)),
+                "R" => d.reviews.push((s(1), s(2))),
+                "T" => d.threads.push(Thread { path: s(1), line: n(2), author: s(3), text: s(4) }),
+                "F" => d.files.push((s(1), n(2), n(3))),
+                "B" => d.body.push(s(1)),
+                _ => {}
+            }
+        }
+        d
+    }
+}
+
+pub fn detail(p: &Pr) -> Res<Detail> {
+    let (owner, name) = p.repo.split_once('/').ok_or_else(|| p.repo.clone())?;
+    let args = [
+        "api", "graphql", "-f", &format!("query={DETAIL}"), "-f", &format!("o={owner}"), "-f", &format!("r={name}"),
+        "-F", &format!("n={}", p.number), "--jq", DETAIL_JQ,
+    ];
+    let mut d = Detail::parse(&gh(&args, token(&p.login).as_deref())?);
+    if p.mergeable == "CONFLICTING" && !p.fork {
+        d.conflicts = conflicts(&p.path, &d.base, &d.head);
+    }
+    Ok(d)
+}
+
+/// GitHub does not say which files conflict: fetches both branches and merges them in memory. Empty if it cannot.
+fn conflicts(repo: &Path, base: &str, head: &str) -> Vec<String> {
+    let spec = |b: &str| format!("+refs/heads/{b}:refs/remotes/origin/{b}");
+    let mut fetch = Command::new("git");
+    fetch.args(["fetch", "-q", "origin", &spec(base), &spec(head)]).current_dir(repo);
+    fetch.env("GIT_TERMINAL_PROMPT", "0").env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes");
+    if !fetch.output().is_ok_and(|o| o.status.success()) {
+        return vec![];
+    }
+    let (a, b) = (format!("refs/remotes/origin/{base}"), format!("refs/remotes/origin/{head}"));
+    let args = ["merge-tree", "--write-tree", "--name-only", "--no-messages", &a, &b];
+    let Ok(o) = Command::new("git").args(args).current_dir(repo).output() else { return vec![] };
+    // first line: the tree; exit code 1 means conflicts
+    String::from_utf8_lossy(&o.stdout).lines().skip(1).filter(|l| !l.is_empty()).map(String::from).collect()
 }
 
 fn cache_file() -> PathBuf {
@@ -236,13 +354,13 @@ pub fn refresh() -> Res<()> {
     fs::write(&tmp, text).and_then(|_| fs::rename(&tmp, cache_file())).map_err(|e| e.to_string())
 }
 
-/// The cached PRs, those that need the user first.
+/// The cached PRs, those that need the user first, and by repo within each group.
 pub fn cached() -> Cache {
     let text = fs::read_to_string(cache_file()).unwrap_or_default();
     let (head, rest) = text.split_once('\n').unwrap_or(("0\t", ""));
     let (at, error) = head.split_once('\t').unwrap_or((head, ""));
     let mut prs: Vec<Pr> = rest.lines().filter_map(Pr::parse).collect();
-    prs.sort_by_key(|p| { let s = p.status(); (s.0 as u8, s.1 as u8, p.age) });
+    prs.sort_by_key(|p| { let s = p.status(); (s.0 as u8, p.repo_name().to_lowercase(), s.1 as u8, p.age) });
     Cache { at: at.parse().unwrap_or(0), error: error.into(), prs }
 }
 
@@ -280,8 +398,17 @@ mod tests {
     }
 
     #[test]
+    fn details() {
+        let d = Detail::parse("M\t1\t2\t3\tmain\tfeat\nC\tfail\te2e\nC\tpending\tlint\nR\tPENDING\t\nT\ta.rs\t7\tana\thi \u{1b}[31m\nF\ta.rs\t1\t2\nB\tx\nB\t\nB\ty\nZ\t?");
+        assert_eq!((d.added, d.changed, d.base.as_str(), d.head.as_str()), (1, 3, "main", "feat"));
+        assert_eq!((d.failing, d.pending, d.reviews), (vec!["e2e".into()], vec!["lint".into()], vec![("PENDING".into(), String::new())]));
+        assert_eq!((d.threads[0].line, d.threads[0].text.as_str()), (7, "hi [31m"));
+        assert_eq!((d.files.len(), d.body), (1, vec!["x".to_string(), "".into(), "y".into()]));
+    }
+
+    #[test]
     fn empty_fields_survive() {
-        let p = Pr::parse("mine\tA/b\t7\tT\tu\tfalse\t\tUNKNOWN\tbr\tfalse\tme\t\t90\t0\t0\t0\t/r").unwrap();
+        let p = Pr::parse("mine\tA/b\t7\tT\tu\tfalse\t\tUNKNOWN\tbr\tfalse\tme\t\t90\t0\t0\t0\tme\t/r").unwrap();
         assert_eq!((p.number.as_str(), p.ci.as_str(), p.age), ("7", "", 90));
     }
 }
