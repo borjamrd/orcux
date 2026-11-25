@@ -39,7 +39,7 @@ Model:
 - tmux session `orcux-bg` holds one window per hidden tab. A worktree has one pane per tab: `@orcux_tab` is its number (stable, lowest free) and `@orcux_on=1` marks the active one. The tabs of the visible worktree are drawn in the tmux border above the terminal (`@orcux_bar`). `<wt>:<n>` targets a tab in `show`, `send` and `read`.
 - If the visible terminal ends (`exit`), the sidebar shows another of its tabs or the placeholder (`heal`).
 - Logo: `⢎⡱ orcux` in the tmux border above the sidebar (an "o" of braille dots). A terminal cannot choose fonts.
-- Look: soft fills and gaps (`pane-border-lines spaces`), no lines; rounded outlines only in popups. Badges have rounded ends with `orcux icons nerd` (Powerline glyphs); never half blocks, which Terminal.app draws shorter than the cell.
+- Look: the ground (sidebar, gaps, status bar) is the terminal's own background (`default`, `Color::Reset`): the terminal shows it around the grid too, and another color would frame the window. Soft fills and gaps (`pane-border-lines spaces`), no lines; rounded outlines only in popups. Badges have rounded ends with `orcux icons nerd` (Powerline glyphs); never half blocks, which Terminal.app draws shorter than the cell.
 - Each worktree pane carries the pane option `@orcux=<repo>/<name>`; the sidebar carries `@orcux=__sidebar` and the rail `@orcux=__prs`. Panes are always found through that marker, never by index.
 - Showing a worktree = `swap-pane` between its pane and the right-hand one. If the one leaving is the placeholder (empty `@orcux`), it is killed.
 - State in plain files in `~/.local/state/orcux/`: `worktrees.tsv` (repo, name, slot), `repos`, `folded` (folders and repos folded in the sidebar), `recent` (ids by last `show`) and `prs.2.tsv` (cache).
@@ -70,6 +70,7 @@ Model:
 - Session targets always use `=` (exact match) and no window index: `=orcux:`. Plain `orcux` prefix-matches `orcux-bg`. The user's `~/.tmux.conf` has `base-index 1`, so `:0` breaks.
 - `run()` does `trim_end()`, which eats the trailing `\t` of the last line when `#{@orcux}` is empty. Parse with a default, never with `split_once(...)?`.
 - `send` waits 150 ms between the text and Enter: TUIs like claude treat text+Enter in one burst as a paste.
+- A click on a pane's border status line (where the tabs are) gives tmux no mouse event at all, and `MouseDown1Border` has no `mouse_x`: tabs there cannot be clicked. Only the status line has ranges (`range=user|X`).
 - `display-popup` fails if it is larger than the client (no clamping), so `popup()` caps it to the client size. A detach closes the popup with a non-zero exit and empty stderr: not an error.
 - tmux scales panes proportionally when the client attaches or resizes: `ensure_ui` pins the sidebar to 36 columns with a `window-resized` hook (dragging the border by hand still works).
 - `orcux dialog view <url>` is the dialog of one PR (Enter or click in the rail): it loads its details in a thread. Read-only towards GitHub. `a` pastes a one-line prompt into the worktree's agent WITHOUT Enter and as a bracketed paste: keys could answer an open permission menu. Text by other people is stripped of control characters and quoted as data.

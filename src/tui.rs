@@ -729,7 +729,7 @@ impl App {
     }
 
     fn draw(&self, f: &mut Frame) {
-        f.render_widget(Block::new().style(Style::new().bg(ABYSS).fg(FOAM)), f.area());
+        f.render_widget(Block::new().style(Style::new().bg(Color::Reset).fg(FOAM)), f.area()); // the terminal's own ground
         let [_, list, _, foot] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1), Constraint::Length(2)]).areas(f.area());
         if let Some(v) = &self.files {
             *self.at.borrow_mut() = v.draw(f, Rect { height: list.height + 1, ..list }, foot, self.active);

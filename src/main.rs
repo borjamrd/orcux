@@ -897,9 +897,10 @@ pub fn restart_self() -> String {
 /// Colors and status bar of the orcux session only; the user's other sessions keep theirs.
 pub fn style_ui() -> Res<()> {
     let t = format!("{UI}:");
-    let (abyss, hull, line, foam) = (hex(theme::ABYSS), hex(theme::HULL), hex(theme::LINE), hex(theme::FOAM));
+    // the ground is the terminal's own: it shows around the grid too, so another color would frame it
+    let (abyss, hull, line, foam) = ("default".to_string(), hex(theme::HULL), hex(theme::LINE), hex(theme::FOAM));
     let status = format!("bg={abyss},fg={foam}");
-    for (k, v) in [("status", "on"), ("status-style", status.as_str()), ("status-left-length", "120"), ("status-right-length", "80")] {
+    for (k, v) in [("status", "on"), ("mouse", "on"), ("status-style", status.as_str()), ("status-left-length", "120"), ("status-right-length", "80")] {
         tmux(&["set-option", "-t", &t, k, v]).ok();
     }
     let (gap, card) = (format!("bg={abyss},fg={abyss}"), format!("bg={hull}"));
@@ -1130,19 +1131,20 @@ pub fn close_tab(w: &Wt, n: u32) -> Res<()> {
 /// The tabs of the visible worktree, as a tmux format for the border above the terminal.
 pub fn tab_bar() -> String {
     let Some((pane, id)) = terminal_pane().filter(|p| !p.1.is_empty()) else { return String::new() };
+    let (hull, foam, muted, line, current) = (hex(theme::HULL), hex(theme::FOAM), hex(theme::MUTED), hex(theme::LINE), hex(theme::CURRENT));
     let one = |p: &Pane| {
         let cmd = tui::program(&p.cmd).replace('#', "##");
-        let (hull, foam, muted) = (hex(theme::HULL), hex(theme::FOAM), hex(theme::MUTED));
         let (glyph, color) = tui::look_hex(p.look());
         let dot = if p.look() == prs::State::Idle { String::new() } else { format!("#[fg={}]{glyph} ", hex(color)) };
+        // one style per #[…]: a comma inside a tmux conditional breaks the whole format
         if p.pane == pane {
-            // same fill as the terminal below it: they read as one card
-            format!("#[bg={hull},fg={muted}]  {} {dot}#[fg={foam},bold]{cmd}  #[default]", p.tab)
+            // the fill of the terminal below, so they read as one card; the accent says which one it is
+            format!("#[bg={hull}]#[fg={current}]#[bold]  {} {dot}#[fg={foam}]#[underscore]{cmd}#[nounderscore]  #[default]", p.tab)
         } else {
-            format!("#[fg={muted}]  {} {dot}#[fg={muted}]{cmd}  #[default]", p.tab)
+            format!("#[fg={line}]  {} {dot}#[fg={muted}]{cmd}  #[default]", p.tab)
         }
     };
-    tabs(&id).iter().map(one).collect::<String>() + &format!("#[fg={}] +", hex(theme::LINE))
+    tabs(&id).iter().map(one).collect::<String>() + &format!("#[fg={line}] +")
 }
 
 pub fn set_tab_bar(bar: &str) {
