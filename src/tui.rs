@@ -5,7 +5,7 @@ use ratatui::{
     widgets::{Block, Paragraph, Wrap},
 };
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     hash::{DefaultHasher, Hash, Hasher},
     io::stdout,
     sync::{atomic::{AtomicBool, Ordering}, mpsc},
@@ -150,6 +150,8 @@ enum Wake {
     Resize,
     /// that connection
     Closed(u32),
+    /// the files of a worktree were read
+    Files,
 }
 
 struct Wakes {
@@ -198,6 +200,10 @@ impl Wakes {
                 News::Closed => Wake::Closed(link),
             }).ok();
         });
+    }
+
+    fn sender(&self) -> mpsc::Sender<Wake> {
+        self.tx.clone()
     }
 
     /// What happened, or None after a second without news. Several news of tmux count as one.
@@ -304,6 +310,159 @@ struct App {
     bar: String,
     /// last status bar sent to tmux
     status: (String, String),
+    /// the files of a worktree, in place of the list
+    files: Option<FilesView>,
+    /// where each row was drawn, for the mouse: [from, to) and which row
+    at: std::cell::RefCell<Vec<(u16, u16, Option<usize>)>>,
+}
+
+/// The files of one worktree and what changed in them (`f`).
+struct FilesView {
+    wt: Wt,
+    files: Option<Res<files::Files>>,
+    rows: Vec<files::Item>,
+    /// folders opened or closed by hand
+    flipped: HashSet<String>,
+    only: bool,
+    sel: usize,
+    reading: Option<mpsc::Receiver<Res<files::Files>>>,
+    read: Instant,
+    wake: mpsc::Sender<Wake>,
+}
+
+impl FilesView {
+    fn new(wt: Wt, wake: mpsc::Sender<Wake>) -> FilesView {
+        let mut v = FilesView { wt, files: None, rows: vec![], flipped: HashSet::new(), only: false, sel: 0, reading: None, read: Instant::now(), wake };
+        v.start();
+        v
+    }
+
+    /// In a thread: a big repo takes a while, and keys must not wait.
+    fn start(&mut self) {
+        if self.reading.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let (dir, wake) = (self.wt.path(), self.wake.clone());
+        thread::spawn(move || {
+            tx.send(files::read(&dir)).ok();
+            wake.send(Wake::Files).ok();
+        });
+        (self.reading, self.read) = (Some(rx), Instant::now());
+    }
+
+    /// Whether something new arrived. Read again when a terminal printed (an agent may have written files), and now and
+    /// then for what changes without printing.
+    fn news(&mut self, printed: bool) -> bool {
+        let mut new = false;
+        if let Some(rx) = &self.reading {
+            match rx.try_recv() {
+                Ok(r) => {
+                    self.reading = None;
+                    new = !matches!((&self.files, &r), (Some(Ok(a)), Ok(b)) if a == b);
+                    if new {
+                        self.files = Some(r);
+                        self.rebuild();
+                    }
+                }
+                Err(mpsc::TryRecvError::Disconnected) => self.reading = None,
+                Err(_) => {}
+            }
+        }
+        let age = self.read.elapsed().as_secs();
+        if (printed && age >= 2) || age >= 10 {
+            self.start();
+        }
+        new
+    }
+
+    fn rebuild(&mut self) {
+        let at = self.rows.get(self.sel).map(|r| r.path.clone());
+        self.rows = match &self.files {
+            Some(Ok(f)) => files::rows(f, &self.flipped, self.only),
+            _ => vec![],
+        };
+        if let Some(i) = at.and_then(|p| self.rows.iter().position(|r| r.path == p)) {
+            self.sel = i;
+        }
+        self.sel = self.sel.min(self.rows.len().saturating_sub(1));
+    }
+
+    fn flip(&mut self, path: String) {
+        if !self.flipped.remove(&path) {
+            self.flipped.insert(path);
+        }
+        self.rebuild();
+    }
+
+    fn draw(&self, f: &mut Frame, area: Rect, foot: Rect, active: bool) -> Vec<(u16, u16, Option<usize>)> {
+        let w = area.width;
+        let mut at = vec![];
+        let [head, _, body] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+        let summary = match &self.files {
+            Some(Ok(x)) if !x.marks.is_empty() => {
+                let (n, a, d) = x.summary();
+                vec![fg(format!("{n}  "), MUTED), fg(format!("+{a} "), KELP), fg(format!("−{d} "), CORAL)]
+            }
+            _ => vec![],
+        };
+        let left = vec![fg(" ‹ ", MUTED), fg(format!("{}/", self.wt.repo_name()), MUTED), self.wt.name.clone().bold().fg(FOAM)];
+        f.render_widget(lr(w, left, summary), head);
+        let note = |text: &str, c: Color| Paragraph::new(format!(" {text}")).wrap(Wrap { trim: true }).fg(c);
+        match &self.files {
+            None => f.render_widget(note(tr().files_reading, MUTED), body),
+            Some(Err(e)) => f.render_widget(note(&short(e), CORAL), body),
+            Some(Ok(_)) if self.rows.is_empty() => f.render_widget(note(if self.only { tr().files_clean } else { tr().files_none }, MUTED), body),
+            Some(Ok(_)) => {
+                let items = self.rows.iter().enumerate().map(|(i, r)| (vec![file_line(r, w)], i == self.sel)).collect();
+                at = blocks(f, body, items, active).into_iter().enumerate().map(|(i, (a, b))| (a, b, Some(i))).collect();
+            }
+        }
+        let lines = vec![
+            keys(&[("⏎", tr().k_diff), ("c", if self.only { tr().k_all_files } else { tr().k_only_changes })]),
+            keys(&[("esc", tr().k_back), ("?", tr().k_commands)]),
+        ];
+        f.render_widget(Paragraph::new(lines), foot);
+        at
+    }
+}
+
+/// A file or a folder: its name, indented, and on the right what changed.
+fn file_line<'a>(r: &files::Item, width: u16) -> Line<'a> {
+    let color = |c: files::Change| match c {
+        files::Change::Modified => SIGNAL,
+        files::Change::Added | files::Change::Untracked => KELP,
+        files::Change::Deleted | files::Change::Conflict => CORAL,
+        files::Change::Renamed => CURRENT,
+    };
+    let right: Vec<Span> = match r.mark {
+        _ if r.dir && r.changed > 0 => vec![fg(format!("{} ", r.changed), MUTED), fg("● ", SIGNAL)],
+        Some(m) => {
+            let mut s = vec![];
+            if let Some((a, d)) = m.lines.filter(|l| *l != (0, 0)) {
+                if a > 0 {
+                    s.push(fg(format!("+{a} "), KELP));
+                }
+                if d > 0 {
+                    s.push(fg(format!("−{d} "), CORAL));
+                }
+            }
+            s.push(fg(format!("{} ", m.change.glyph()), color(m.change)));
+            s
+        }
+        None => vec![],
+    };
+    let room = (width as usize).saturating_sub(Line::from(right.clone()).width() + 2 * r.depth + 4);
+    let indent = " ".repeat(2 * r.depth + 1);
+    let left = if r.dir {
+        vec![fg(format!("{indent}{}", if r.open { "▾ " } else { "▸ " }), LINE), fg(fit(&r.name, room), MUTED)]
+    } else {
+        let c = r.mark.map_or(FOAM, |m| color(m.change));
+        let name = fg(fit(&r.name, room), c);
+        let name = if r.mark.is_some_and(|m| m.change == files::Change::Deleted) { name.crossed_out() } else { name };
+        vec![fg(format!("{indent}  "), LINE), name]
+    };
+    lr(width, left, right)
 }
 
 impl App {
@@ -572,6 +731,10 @@ impl App {
     fn draw(&self, f: &mut Frame) {
         f.render_widget(Block::new().style(Style::new().bg(ABYSS).fg(FOAM)), f.area());
         let [_, list, _, foot] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1), Constraint::Length(2)]).areas(f.area());
+        if let Some(v) = &self.files {
+            *self.at.borrow_mut() = v.draw(f, Rect { height: list.height + 1, ..list }, foot, self.active);
+            return;
+        }
         let w = f.area().width;
         let is_wt = |j: usize| matches!(self.rows.get(j), Some(Row::Wt(..)));
         let mut items = vec![];
@@ -597,7 +760,11 @@ impl App {
                 Row::Wt(wt, trail) => items.push((self.wt_lines(wt, w, trail, sel), sel)),
             }
         }
-        blocks(f, list, items, self.active);
+        // a gap is one empty line; every other block is a row, in order
+        let mut n = 0;
+        let owners: Vec<Option<usize>> = items.iter().map(|(b, _)| (!(b.len() == 1 && b[0].width() == 0)).then(|| { n += 1; n - 1 })).collect();
+        let spans = blocks(f, list, items, self.active);
+        *self.at.borrow_mut() = spans.into_iter().zip(owners).map(|((a, b), o)| (a, b, o)).collect();
         if self.msg.is_empty() {
             let lines = vec![
                 keys(&[("n", tr().k_new), ("A", tr().k_add), ("d", tr().k_delete)]),
@@ -653,6 +820,7 @@ fn input(e: Event) -> Option<Input> {
 
 pub fn run() -> Res<()> {
     let mut term = ratatui::init();
+    execute!(stdout(), event::EnableMouseCapture).ok();
     let mut wakes = Wakes::start();
     style_ui().ok();
     thread::spawn(|| loop {
@@ -666,7 +834,7 @@ pub fn run() -> Res<()> {
     let mut app = App {
         rows: vec![], sel: 1, msg: String::new(), seen: HashMap::new(), told: HashMap::new(), keeper: restore::Keeper::start(), started: false, clock: (Instant::now(), prs::now()), live: HashMap::new(),
         prs: Cache::default(), active: true, status: Default::default(), busy: HashMap::new(),
-        visible: String::new(), missing: false, bar: String::new(), wts: vec![],
+        visible: String::new(), missing: false, bar: String::new(), wts: vec![], files: None, at: Default::default(),
     };
     let (mut last, binary) = (Instant::now(), Binary::now());
     app.refresh();
@@ -680,6 +848,30 @@ pub fn run() -> Res<()> {
             ratatui::restore();
             break Err(restart_self());
         }
+        let wake = match wake {
+            Some(Wake::Input(Input::Wheel { down })) => Some(Wake::Input(Input::Key(if down { KeyCode::Down } else { KeyCode::Up }))),
+            // a click selects; on what is selected, opens it
+            Some(Wake::Input(Input::Click { row, .. })) => {
+                let hit = app.at.borrow().iter().find(|a| (a.0..a.1).contains(&row)).and_then(|a| a.2);
+                let sel = match &mut app.files {
+                    Some(v) => &mut v.sel,
+                    None => &mut app.sel,
+                };
+                match hit {
+                    Some(i) if i == *sel => Some(Wake::Input(Input::Key(KeyCode::Enter))),
+                    Some(i) => {
+                        *sel = i;
+                        draw = true;
+                        continue;
+                    }
+                    None => {
+                        draw = false;
+                        continue;
+                    }
+                }
+            }
+            w => w,
+        };
         let k = match wake {
             Some(Wake::Input(Input::Key(k))) => k,
             Some(Wake::Focus) => {
@@ -689,8 +881,9 @@ pub fn run() -> Res<()> {
                 continue;
             }
             w => {
+                let files = app.files.as_mut().is_some_and(|v| v.news(matches!(w, Some(Wake::Tmux))));
                 // half a minute: what tells how long ago something was
-                draw = matches!(w, Some(Wake::Tmux | Wake::Resize)) || wakes.changed() || app.pending() || !control::connected() || last.elapsed().as_secs() >= 30;
+                draw = files || matches!(w, Some(Wake::Tmux | Wake::Resize)) || wakes.changed() || app.pending() || !control::connected() || last.elapsed().as_secs() >= 30;
                 if draw {
                     app.refresh();
                     last = Instant::now();
@@ -700,6 +893,41 @@ pub fn run() -> Res<()> {
         };
         draw = true;
         app.msg.clear();
+        if let Some(v) = &mut app.files {
+            let row = v.rows.get(v.sel).map(|r| (r.path.clone(), r.dir, r.open));
+            match k {
+                KeyCode::Esc | KeyCode::Char('f') => app.files = None,
+                KeyCode::Char('j') | KeyCode::Down => v.sel = (v.sel + 1).min(v.rows.len().saturating_sub(1)),
+                KeyCode::Char('k') | KeyCode::Up => v.sel = v.sel.saturating_sub(1),
+                KeyCode::Char('c') => {
+                    v.only = !v.only;
+                    v.flipped.clear();
+                    v.rebuild();
+                }
+                KeyCode::Enter | KeyCode::Char(' ' | 'l') | KeyCode::Right if row.as_ref().is_some_and(|r| r.1) => {
+                    let (path, _, open) = row.unwrap_or_default();
+                    if !open || matches!(k, KeyCode::Enter | KeyCode::Char(' ')) {
+                        v.flip(path);
+                    }
+                }
+                KeyCode::Char('h') | KeyCode::Left => if let Some((path, dir, open)) = row {
+                    // closes it, or goes to the folder it is in
+                    if dir && open {
+                        v.flip(path);
+                    } else if let Some(i) = v.rows[..v.sel].iter().rposition(|r| r.dir && r.depth < v.rows[v.sel].depth) {
+                        v.sel = i;
+                    }
+                },
+                KeyCode::Enter => if let Some((path, ..)) = row {
+                    let dir = v.wt.path().to_string_lossy().to_string();
+                    app.popup(&path.clone(), (148, 48), &["dialog", "diff", &dir, &path]);
+                },
+                KeyCode::Char('?') => app.popup(tr().title_commands, (148, 34), &["commands"]),
+                KeyCode::Char('q') => { detach().ok(); }
+                _ => {}
+            }
+            continue;
+        }
         match k {
             KeyCode::Char('q') => { detach().ok(); }
             KeyCode::Char('j') | KeyCode::Down => app.sel = (app.sel + 1).min(app.rows.len().saturating_sub(1)),
@@ -717,6 +945,15 @@ pub fn run() -> Res<()> {
                 app.popup(tr().title_merge, (76, 14), &["dialog", "merge", &id]);
             },
             KeyCode::Tab => { focus(RAIL).ok(); }
+            KeyCode::Char('f') => {
+                let wt = match app.selected() {
+                    Some(Row::Wt(w, _)) => Some(w.clone()),
+                    _ => app.wts.iter().find(|w| w.id() == app.visible).cloned(),
+                };
+                if let Some(w) = wt {
+                    app.files = Some(FilesView::new(w, wakes.sender()));
+                }
+            }
             KeyCode::Char('N') => if let Some(Row::Wt(w, _)) = app.selected() {
                 let id = w.id();
                 app.popup(tr().title_child, DIALOG, &["dialog", "child", &id]);

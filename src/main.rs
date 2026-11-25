@@ -1,5 +1,6 @@
 mod agent;
 mod config;
+mod files;
 mod control;
 mod doctor;
 mod i18n;
@@ -1229,6 +1230,7 @@ fn cli(a: &[&str]) -> Res<()> {
         ["dialog", "rm", id] => tui::dialog_rm(&find(Some(id))?),
         ["dialog", "pr", repo, branch, label] => tui::dialog_pr(Path::new(repo), branch, label),
         ["dialog", "view", url] => tui::dialog_view(url),
+        ["dialog", "diff", dir, path] => files::show(Path::new(dir), path),
         ["dialog", "close"] => tui::dialog_close(),
         ["dialog", "error", text] => tui::dialog_error(text),
         ["new", name, rest @ ..] => {

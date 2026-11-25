@@ -10,6 +10,9 @@
 - `.orcux`: setup, teardown, shared folders, named ports and variables per repo, used once approved.
 - `orcux merge` and `orcux conflicts`. Nothing is pushed.
 - After a restart, terminals and conversations come back.
+- `f` in the sidebar: the files of a worktree and what changed in each, with its diff.
+- Click in the sidebar to select a worktree.
+- The logo waves in the commands dialog.
 - Your pull requests, read-only, with what blocks each one.
 - A CLI to create worktrees and to type into and read their terminals, safe to run several times at once.
 - `orcux doctor`.

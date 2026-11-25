@@ -31,6 +31,12 @@ pub struct Text {
     pub k_hide: &'static str,
     pub k_refresh: &'static str,
     pub k_back: &'static str,
+    pub k_diff: &'static str,
+    pub k_only_changes: &'static str,
+    pub k_all_files: &'static str,
+    pub files_reading: &'static str,
+    pub files_clean: &'static str,
+    pub files_none: &'static str,
     // dialogs
     pub title_commands: &'static str,
     pub title_new: &'static str,
@@ -306,6 +312,8 @@ mod tests {
             for k in [
                 vec![("n", t.k_new), ("A", t.k_add), ("d", t.k_delete)],
                 vec![("?", t.k_commands), ("Opt+w", t.k_switch)],
+                vec![("⏎", t.k_diff), ("c", t.k_only_changes)],
+                vec![("esc", t.k_back), ("?", t.k_commands)],
             ] {
                 assert!(keys(&k) <= 36, "{lang}: sidebar {k:?}");
             }
