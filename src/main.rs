@@ -899,27 +899,21 @@ pub fn style_ui() -> Res<()> {
     let t = format!("{UI}:");
     // the ground is the terminal's own: it shows around the grid too, so another color would frame it
     let (abyss, hull, line, foam) = ("default".to_string(), hex(theme::HULL), hex(theme::LINE), hex(theme::FOAM));
+    // one row above the panes, drawn whole by tab_bar(): pane titles have two cells of border that cannot be drawn
     let status = format!("bg={abyss},fg={foam}");
-    for (k, v) in [("status", "on"), ("mouse", "on"), ("status-style", status.as_str()), ("status-left-length", "120"), ("status-right-length", "80")] {
+    for (k, v) in [("status", "on"), ("status-position", "top"), ("status-format[0]", "#{@orcux_bar}"), ("status-style", status.as_str()), ("mouse", "on")] {
         tmux(&["set-option", "-t", &t, k, v]).ok();
     }
     let gap = format!("bg={abyss},fg={abyss}");
-    let rail = format!("#[bg={hull}#,fg={foam}#,bold]  {}  #[default]", tr().your_prs);
-    // the logo, an "o" of four by four dots, and the name. No commas: it goes inside a tmux conditional
-    let blue = hex(theme::CURRENT);
-    let name = format!("#[fg={blue}]⢎#[fg={foam}]⡱ #[bold]orcux");
-    let titles = format!("#{{?#{{==:#{{@orcux}},{SIDEBAR}}},{name},#{{?#{{==:#{{@orcux}},{RAIL}}},{rail},#{{@orcux_bar}}}}}}");
     for (k, v) in [
         ("window-status-format", ""),
         ("window-status-current-format", ""),
-        // gaps, not lines: tmux draws two cells of line before every title. The sidebar and the rail draw the lines
-        // beside the terminal themselves
+        // gaps, not lines: the sidebar and the rail draw the lines beside the terminal themselves
         ("pane-border-lines", "spaces"),
         ("pane-border-style", gap.as_str()),
         ("pane-active-border-style", gap.as_str()),
         ("window-style", "bg=default"),
-        ("pane-border-status", "top"),
-        ("pane-border-format", titles.as_str()),
+        ("pane-border-status", "off"),
     ] {
         tmux(&["set-option", "-w", "-t", &t, k, v]).ok(); // an older tmux lacks some
     }
@@ -942,18 +936,15 @@ pub fn style_ui() -> Res<()> {
         (&["∂", "M-d"], tab("next")),
         (&["œ", "M-q"], close),
         (&["®", "M-r"], format!("run-shell -b \"'{}' next >/dev/null 2>&1 || true\"", exe.display())),
+        (&["MouseDown1Status"], tab("click #{mouse_status_range}")),
     ] {
         for k in keys {
-            tmux(&["bind-key", "-n", k, "if-shell", "-F", "#{==:#{session_name},orcux}", &cmd, &format!("send-keys {k}")]).ok();
+            // elsewhere, what the key does without orcux
+            let other = if *k == "MouseDown1Status" { "select-window -t =".to_string() } else { format!("send-keys {k}") };
+            tmux(&["bind-key", "-n", k, "if-shell", "-F", "#{==:#{session_name},orcux}", &cmd, &other]).ok();
         }
     }
     Ok(())
-}
-
-pub fn set_status(left: &str, right: &str) {
-    let t = format!("{UI}:");
-    tmux(&["set-option", "-t", &t, "status-left", left]).ok();
-    tmux(&["set-option", "-t", &t, "status-right", right]).ok();
 }
 
 pub fn open_url(url: &str) -> Res<()> {
@@ -1130,24 +1121,101 @@ pub fn close_tab(w: &Wt, n: u32) -> Res<()> {
     Ok(())
 }
 
-/// The tabs of the visible worktree, as a tmux format for the border above the terminal.
-pub fn tab_bar() -> String {
-    let Some((pane, id)) = terminal_pane().filter(|p| !p.1.is_empty()) else { return String::new() };
-    let (hull, muted, wake, current) = (hex(theme::HULL), hex(theme::MUTED), hex(theme::WAKE), hex(theme::CURRENT));
-    let one = |p: &Pane| {
-        let cmd = tui::program(&p.cmd).replace('#', "##");
-        let (glyph, color) = tui::look_hex(p.look());
-        let dot = if p.look() == prs::State::Idle { String::new() } else { format!("#[fg={}]{glyph} ", hex(color)) };
-        // one style per #[…]: a comma inside a tmux conditional breaks the whole format
-        if p.pane == pane {
-            // filled with the accent, on the frame of the terminal
-            let dot = if dot.is_empty() { dot } else { format!("#[fg={hull}]{glyph} ") };
-            format!("#[bg={current}]#[fg={hull}]#[bold] {} {dot}{cmd} #[default] ", p.tab)
-        } else {
-            format!("#[bg={wake}]#[fg={muted}] {} {dot}#[fg={muted}]{cmd} #[default] ", p.tab)
+/// Text with its tmux styles, and how wide it is on screen.
+struct Bar {
+    s: String,
+    at: usize,
+}
+
+impl Bar {
+    fn put(&mut self, style: &str, text: &str) {
+        self.s += style;
+        self.s += &text.replace('#', "##");
+        self.at += ratatui::text::Span::raw(text).width();
+    }
+
+    fn fill(&mut self, style: &str, to: usize, c: char) {
+        if to > self.at {
+            self.put(style, &c.to_string().repeat(to - self.at));
         }
-    };
-    format!(" {}#[fg={muted}]+ ", tabs(&id).iter().map(one).collect::<String>())
+    }
+}
+
+/// The row above the panes, in the status line of the orcux session: the logo over the sidebar, the tabs of the
+/// visible worktree on the top line of the frame of the terminal, and the title of the rail. Every cell of it is
+/// drawn here, so the corners meet the lines that the sidebar and the rail draw beside the terminal. Each tab is a
+/// range for the mouse.
+pub fn tab_bar() -> String {
+    let geo = tmux(&["list-panes", "-t", &format!("{UI}:"), "-F", "#{pane_id}\t#{pane_left}\t#{pane_width}\t#{window_width}\t#{@orcux}"]).unwrap_or_default();
+    let (mut side, mut rail, mut term, mut width) = (None, None, None, 0);
+    for l in geo.lines() {
+        let f: Vec<&str> = l.split('\t').collect();
+        let n = |i: usize| f.get(i).and_then(|x| x.parse::<usize>().ok()).unwrap_or(0);
+        width = n(3);
+        match f.get(4).copied().unwrap_or("") {
+            SIDEBAR => side = Some(n(1) + n(2)),
+            RAIL => rail = Some(n(1)),
+            id => term = Some((f[0].to_string(), id.to_string(), n(1))),
+        }
+    }
+    let (blue, foam, muted, hull) = (hex(theme::CURRENT), hex(theme::FOAM), hex(theme::MUTED), hex(theme::HULL));
+    let (line, plain) = (format!("#[default]#[fg={blue}]"), "#[default]".to_string());
+    let mut b = Bar { s: String::new(), at: 0 };
+    b.put(&format!("#[fg={blue}]"), "  ⢎");
+    b.put(&format!("#[fg={foam}]"), "⡱ ");
+    b.put("#[bold]", "orcux");
+    // the frame: its corners are over the lines of the sidebar (its last column) and of the rail (its first)
+    if let Some(edge) = side {
+        b.fill(&plain, edge - 1, ' ');
+        b.put(&line, "╭");
+    }
+    if let Some((pane, id, left)) = term {
+        b.fill(&line, left + 1, '─');
+        if !id.is_empty() {
+            for p in tabs(&id) {
+                let cmd = tui::program(&p.cmd).to_string();
+                let (glyph, color) = tui::look_hex(p.look());
+                let dot = |b: &mut Bar| if p.look() != prs::State::Idle { b.put(&format!("#[fg={}]", hex(color)), &format!("{glyph} ")) };
+                b.s += &format!("#[range=user|t{}]", p.tab);
+                if p.pane == pane {
+                    // outlined by the frame, which opens around it
+                    b.put(&line, "┤");
+                    b.put(&format!("#[default]#[fg={foam}]#[bold]"), &format!(" {} ", p.tab));
+                    dot(&mut b);
+                    b.put(&format!("#[fg={foam}]#[bold]"), &format!("{cmd} "));
+                    b.put(&line, "├");
+                } else {
+                    b.put(&format!("#[default]#[fg={muted}]"), &format!(" {} ", p.tab));
+                    dot(&mut b);
+                    b.put(&format!("#[fg={muted}]"), &format!("{cmd} "));
+                }
+                b.s += "#[norange]";
+                b.put(&line, "─");
+            }
+            b.s += "#[range=user|new]";
+            b.put(&format!("#[default]#[fg={muted}]"), " + ");
+            b.s += "#[norange]";
+        }
+    }
+    match rail {
+        Some(edge) => {
+            b.fill(&line, edge, '─');
+            b.put(&line, "╮");
+            b.put(&format!("#[default]#[bg={hull}]#[fg={foam}]#[bold]"), &format!("  {}  ", tr().your_prs));
+        }
+        None => b.fill(&line, width, '─'),
+    }
+    b.s + "#[default]"
+}
+
+/// A click on the row above the panes: a tab, or + for a new one.
+pub fn click_tab(range: &str) -> Res<()> {
+    let (w, _) = visible()?;
+    match range.strip_prefix('t').and_then(|n| n.parse().ok()) {
+        Some(n) => show_tab(&w, Some(n)),
+        None if range == "new" => open_tab(&w),
+        None => Ok(()),
+    }
 }
 
 pub fn set_tab_bar(bar: &str) {
@@ -1293,6 +1361,7 @@ fn cli(a: &[&str]) -> Res<()> {
             let (w, n) = target(q)?;
             close_tab(&w, n.ok_or(tr().which_tab)?)
         }
+        ["tab", "click", range] => click_tab(range),
         ["tab", "next"] => step_tab(true),
         ["tab", "prev"] => step_tab(false),
         ["send", q, text @ ..] if !text.is_empty() => {

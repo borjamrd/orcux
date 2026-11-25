@@ -318,8 +318,6 @@ struct App {
     missing: bool,
     /// last tab bar sent to tmux
     bar: String,
-    /// last status bar sent to tmux
-    status: (String, String),
     /// the files of a worktree, in place of the list
     files: Option<FilesView>,
     /// where each row was drawn, for the mouse: [from, to) and which row
@@ -576,7 +574,6 @@ impl App {
         }
         self.prs = prs::cached();
         sync_rail().ok(); // no room for it: stay without
-        self.update_status(&wts);
     }
 
     /// The visible terminal ended (`exit`): shows another tab of its worktree, or the placeholder. Waits for a
@@ -612,28 +609,22 @@ impl App {
         self.missing || self.live.values().flatten().any(|p| p.busy || asked(p))
     }
 
-    fn update_status(&mut self, wts: &[Wt]) {
-        let esc = |s: &str| s.replace('#', "##").replace('%', "%%");
-        let mut left = String::new();
-        match wts.iter().filter(|w| self.waits(&w.id())).count() {
-            0 => {}
-            n => left += &format!(" #[fg={}]{} {} ", hex(theme::SIGNAL), look(State::Asking).0, (tr().agents_wait)(n)),
+    /// What waits and what works, for the foot of the sidebar.
+    fn totals<'a>(&self) -> Line<'a> {
+        let mut s: Vec<Span> = vec![" ".into()];
+        let waits = self.wts.iter().filter(|w| self.waits(&w.id())).count();
+        if waits > 0 {
+            s.push(fg(format!("{} {}  ", look(State::Asking).0, (tr().agents_wait)(waits)), SIGNAL));
         }
-        match self.prs.prs.iter().filter(|p| p.status().0 == Group::Yours).count() {
-            0 => left += " ",
-            n => left += &format!(" #[fg={}]◆ {}  ", hex(theme::SIGNAL), (tr().prs_yours)(n)),
+        let yours = self.prs.prs.iter().filter(|p| p.status().0 == Group::Yours).count();
+        if yours > 0 {
+            s.push(fg(format!("◆ {}  ", (tr().prs_yours)(yours)), SIGNAL));
         }
-        left += &match wts.iter().filter(|w| self.working(&w.id())).count() {
-            0 => format!("#[fg={}]○ {}", hex(theme::MUTED), (tr().n_working)(0)),
-            n => format!("#[fg={}]● {}", hex(theme::CURRENT), (tr().n_working)(n)),
-        };
-        let shown = terminal_pane().map(|p| p.1).unwrap_or_default();
-        let right = wts.iter().find(|w| w.id() == shown)
-            .map(|w| format!("{} #[fg={}]:{} ", esc(&shown), hex(theme::MUTED), w.port())).unwrap_or_default();
-        if self.status != (left.clone(), right.clone()) {
-            set_status(&left, &right);
-            self.status = (left, right);
-        }
+        s.push(match self.wts.iter().filter(|w| self.working(&w.id())).count() {
+            0 => fg(format!("○ {}", (tr().n_working)(0)), MUTED),
+            n => fg(format!("● {}", (tr().n_working)(n)), CURRENT),
+        });
+        Line::from(s)
     }
 
     fn selected(&self) -> Option<&Row> {
@@ -740,8 +731,13 @@ impl App {
 
     fn draw(&self, f: &mut Frame) {
         f.render_widget(Block::new().style(Style::new().bg(Color::Reset).fg(FOAM)), f.area()); // the terminal's own ground
-        let [_, list, _, foot] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1), Constraint::Length(2)]).areas(f.area());
+        let sum = self.totals();
+        let lines = if sum.width() < f.area().width as usize { 1 } else { 2 };
+        let [_, list, _, foot, _, below] = Layout::vertical([
+            Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1), Constraint::Length(2), Constraint::Length(1), Constraint::Length(lines),
+        ]).areas(f.area());
         let right = f.area().right().saturating_sub(1);
+        f.render_widget(Paragraph::new(sum).wrap(Wrap { trim: true }), Rect { width: below.width.saturating_sub(1), ..below });
         let list = Rect { width: list.width.saturating_sub(1), ..list };
         if let Some(v) = &self.files {
             *self.at.borrow_mut() = v.draw(f, Rect { height: list.height + 1, ..list }, foot, self.active);
@@ -847,7 +843,7 @@ pub fn run() -> Res<()> {
     });
     let mut app = App {
         rows: vec![], sel: 1, msg: String::new(), seen: HashMap::new(), told: HashMap::new(), keeper: restore::Keeper::start(), started: false, clock: (Instant::now(), prs::now()), live: HashMap::new(),
-        prs: Cache::default(), active: true, status: Default::default(), busy: HashMap::new(),
+        prs: Cache::default(), active: true, busy: HashMap::new(),
         visible: String::new(), missing: false, bar: String::new(), wts: vec![], files: None, at: Default::default(),
     };
     let (mut last, binary) = (Instant::now(), Binary::now());
@@ -936,7 +932,7 @@ pub fn run() -> Res<()> {
                     let dir = v.wt.path().to_string_lossy().to_string();
                     app.popup(&path.clone(), (148, 48), &["dialog", "diff", &dir, &path]);
                 },
-                KeyCode::Char('?') => app.popup(tr().title_commands, (148, 40), &["commands"]),
+                KeyCode::Char('?') => app.popup(tr().title_commands, (158, 46), &["commands"]),
                 KeyCode::Char('q') => { detach().ok(); }
                 _ => {}
             }
@@ -946,7 +942,7 @@ pub fn run() -> Res<()> {
             KeyCode::Char('q') => { detach().ok(); }
             KeyCode::Char('j') | KeyCode::Down => app.sel = (app.sel + 1).min(app.rows.len().saturating_sub(1)),
             KeyCode::Char('k') | KeyCode::Up => app.sel = app.sel.saturating_sub(1),
-            KeyCode::Char('?') => app.popup(tr().title_commands, (148, 40), &["commands"]),
+            KeyCode::Char('?') => app.popup(tr().title_commands, (158, 46), &["commands"]),
             KeyCode::Char('p') => if let Err(e) = toggle_rail() {
                 app.error(&e);
             },
@@ -1307,7 +1303,7 @@ pub fn rail() -> Res<()> {
             (KeyCode::Char('k') | KeyCode::Up, _) => { sel = sel.saturating_sub(1); Ok(()) }
             (KeyCode::Tab, _) => focus(SIDEBAR),
             (KeyCode::Char('p'), _) => toggle_rail(), // closes this pane
-            (KeyCode::Char('?'), _) => popup(tr().title_commands, (148, 40), &["commands"]),
+            (KeyCode::Char('?'), _) => popup(tr().title_commands, (158, 46), &["commands"]),
             (KeyCode::Char('r'), _) if busy.is_none() => { busy = Some(thread::spawn(|| { prs::refresh().ok(); })); Ok(()) }
             (KeyCode::Char('o'), Some(p)) => open_url(&p.url),
             (KeyCode::Enter, Some(p)) => view(p),
@@ -1756,16 +1752,16 @@ pub fn commands() -> Res<()> {
         let drawn = term.draw(|f| {
             let mut area = f.area();
             // the mark, waving, beside the list if there is room for both, centred on its height
-            if area.width >= 94 + 4 + mark::W && area.height >= mark::H + 4 {
+            if area.width >= 94 + 8 + mark::W + 4 && area.height >= mark::H + 4 {
                 animated = true;
-                let [side, list] = Layout::horizontal([Constraint::Length(mark::W + 4), Constraint::Fill(1)]).areas(area);
+                let [side, list, _] = Layout::horizontal([Constraint::Length(mark::W + 8), Constraint::Fill(1), Constraint::Length(4)]).areas(area);
                 area = list;
-                let at = Rect { x: side.x + 2, y: side.y + (side.height - mark::H) / 2, width: mark::W, height: mark::H };
+                let at = Rect { x: side.x + 4, y: side.y + (side.height - mark::H) / 2, width: mark::W, height: mark::H };
                 f.render_widget(Paragraph::new(mark::waving(start.elapsed().as_secs_f32())), at);
             }
             let [_, input, _, body, _, foot, _] = Layout::vertical([
-                Constraint::Length(2), Constraint::Length(1), Constraint::Length(1),
-                Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1), Constraint::Length(2),
+                Constraint::Length(4), Constraint::Length(1), Constraint::Length(1),
+                Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1), Constraint::Length(4),
             ]).areas(area);
             f.render_widget(lr(input.width, vec![fg(format!(" {}: ", tr().search), MUTED), fg(format!("{query}▏"), FOAM)], vec![]).bg(WAKE), input);
             let wide = body.width >= 90;
