@@ -114,7 +114,6 @@ pub static EN: Text = Text {
     hint_rm: "y yes  D force  any other key: no",
     hint_force: "D force (loses the changes)  any other key: no",
     hint_any: "press any key to close",
-    orc: &["no idea, but it compiles…", "straight to main, it is 3 AM…", "works on my machine", "rm node_modules, to be safe…", "the duck says it is the cache", "one last commit and off to bed"],
     hint_scroll: "↑/↓ scroll  esc close",
     hint_close: "esc close",
     hint_view: "↑/↓ section   space open or close   j/k scroll",

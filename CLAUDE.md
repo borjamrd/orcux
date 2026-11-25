@@ -16,7 +16,7 @@ It does not emulate terminals: **ratatui draws the sidebar and tmux runs the ter
 - `orcux doctor` (`src/doctor.rs`): checks tmux, git, gh, the locale, the state and broken links of worktrees. tmux 3.3 is the oldest that could work (popup styles), untested below 3.6; options that an older one lacks are skipped.
 - `packaging/`: `install.sh` (checks the checksum) and `formula.sh` (Homebrew). `.github/workflows`: `ci.yml` (macOS and Linux) and `release.yml` (a tag `v*` builds four binaries and leaves a draft).
 - `docs/demo.gif` is made of real screens of an isolated orcux; before recording, set a neutral prompt: the default one shows the user and the computer.
-- `orcux help`: lists the subcommands. The same table (`commands` in `src/i18n/*.rs`) feeds the sidebar's `?` dialog (`orcux commands` in a tmux popup): every new command or shortcut goes there, in every language.
+- `orcux help`: lists the subcommands. The same table (`commands` in `src/i18n/*.rs`) feeds the sidebar's `?` dialog (`orcux commands` in a tmux popup, 148 columns: the mark waves beside the list from 141): every new command or shortcut goes there, in every language.
 
 ## Architecture (1 dependency: ratatui)
 
@@ -24,9 +24,7 @@ It does not emulate terminals: **ratatui draws the sidebar and tmux runs the ter
 - `src/control.rs`: a lasting connection to tmux (control mode) for the sidebar, the rail and the placeholder. `tmux()` goes through it when there is one; commands that ask many things (`show`, `tab`, `switch`) borrow one; elsewhere, and with an old tmux, it is a process.
 - `src/tui.rs`: the sidebar (`orcux sidebar`, the UI's left pane), the PR rail (`orcux rail`, right pane) and the dialogs. Colors come from `src/theme.rs` (design system "orcux"), also for tmux styles.
 - `src/i18n/`: every text the user sees, one file per language (`en`, `es`). Never write a user-facing literal elsewhere: add a field to `Text` (a missing translation does not compile) and use `tr().field`; texts with data are functions. Language: `ORCUX_LANG`, then `orcux lang <code>` (saved in `lang`), then the system, then English. The `every_language_fits` test checks widths.
-- `src/orc.rs`: the animated orc of the commands dialog, at its left (from 134 columns and 22 rows): only the bust, without a background.
-- `src/mark.rs`: the logo, the "o" of Fraunces Bold with an "x" as subscript, in braille dots with a gradient (`DEEP`, `CURRENT`, `FOAM`). Shown by `orcux welcome` (internal), the placeholder pane when no worktree is shown: it passes its keys to the sidebar.
-- `src/pixels.rs`: draws the orc, in shades of the text color, with lower half blocks `▄`: `▀` leaves stripes in fonts that draw it shorter than the cell.
+- `src/mark.rs`: the logo, the "o" of Fraunces Bold with an "x" as subscript, in braille dots with a gradient (`DEEP`, `CURRENT`, `FOAM`). Shown by `orcux welcome` (internal), the placeholder pane when no worktree is shown: it passes its keys to the sidebar. In the commands dialog it waves: its dots move along a diagonal wave, and light up as it passes.
 - `src/agent.rs`: what agents say about themselves (working, question, permission, failed, done, idle): Claude Code through hooks, OpenCode through `src/opencode.js`, Gemini CLI and Codex by the title of their terminal (documented, not tested with the real ones).
 - `src/config.rs`: `.orcux` in the main checkout (setup, teardown, link, port, env). Used only as approved with `orcux trust`, kept whole in `trusted/`, never through a hash. `trust` asks at a terminal.
 - `src/merge.rs`: `merge` (merge-tree first; merges exactly the commit it checked, then removes; never pushes) and `conflicts` (snapshots of uncommitted work through a temporary index: the agent's index is not touched).

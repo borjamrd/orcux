@@ -114,7 +114,6 @@ pub static ES: Text = Text {
     hint_rm: "y sí  D forzar  otra tecla: no",
     hint_force: "D forzar (pierde los cambios)  otra tecla: no",
     hint_any: "pulsa una tecla para cerrar",
-    orc: &["no sé qué escribo, pero compila…", "a main directo, son las 3 AM…", "en mi máquina funciona", "borro node_modules, por si acaso…", "el pato dice que es la caché", "un último commit y a dormir"],
     hint_scroll: "↑/↓ desplazar  esc cerrar",
     hint_close: "esc cerrar",
     hint_view: "↑/↓ sección   espacio abrir o cerrar   j/k desplazar",

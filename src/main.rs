@@ -5,8 +5,6 @@ mod doctor;
 mod i18n;
 mod mark;
 mod merge;
-mod orc;
-mod pixels;
 mod prs;
 mod restore;
 mod theme;
