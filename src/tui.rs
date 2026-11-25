@@ -1,4 +1,4 @@
-use crate::{i18n::tr, prs::{self, Cache, Detail, Group, Pr, State}, *};
+use crate::{agent::{self, Screen}, i18n::tr, prs::{self, Cache, Detail, Group, Pr, State}, *};
 use ratatui::{
     crossterm::{event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind}, execute},
     prelude::*,
@@ -34,6 +34,17 @@ fn look(s: State) -> (&'static str, Color) {
         State::Idle => ("○", MUTED),
         State::Done => ("✓", KELP),
     }
+}
+
+pub fn look_hex(s: State) -> (&'static str, u32) {
+    let color = match s {
+        State::Failed => theme::CORAL,
+        State::Waiting => theme::SIGNAL,
+        State::Working => theme::CURRENT,
+        State::Idle => theme::MUTED,
+        State::Done => theme::KELP,
+    };
+    (look(s).0, color)
 }
 
 fn fg<'a>(s: impl Into<String>, c: Color) -> Span<'a> {
@@ -183,19 +194,28 @@ impl App {
         }
         self.sel = self.sel.min(self.rows.len().saturating_sub(1));
         self.live.clear();
-        // ponytail: "working" = screen changed in the last 3s (agent spinners redraw). Use agent hooks if this misfires.
+        let watched = terminal_pane().map(|p| p.0).filter(|_| {
+            tmux(&["display-message", "-p", "-t", &format!("{UI}:"), "#{session_attached}"]).is_ok_and(|n| n != "0")
+        });
         for mut p in panes() {
             if p.wt == SIDEBAR || p.wt == RAIL {
                 continue;
             }
+            let text = tmux(&["capture-pane", "-p", "-t", &p.pane]).unwrap_or_default();
             let mut h = DefaultHasher::new();
-            tmux(&["capture-pane", "-p", "-t", &p.pane]).unwrap_or_default().hash(&mut h);
+            text.hash(&mut h);
             let h = h.finish();
             let e = self.seen.entry(p.pane.clone()).or_insert((h, None));
             if e.0 != h {
                 *e = (h, Some(Instant::now()));
             }
-            p.busy = e.1.is_some_and(|t| t.elapsed().as_secs() < 3);
+            let screen = Screen { still: e.1.map(|t| t.elapsed().as_secs()), text, visible: watched.as_ref() == Some(&p.pane) };
+            let (busy, new) = agent::settle(p.agent, &screen, prs::now());
+            p.busy = busy;
+            if let (Some(was), Some(new)) = (p.agent, new) {
+                agent::replace(&p.pane, was, new);
+                p.agent = Some((new, prs::now()));
+            }
             if self.busy.insert(p.pane.clone(), p.busy) != Some(p.busy) {
                 set_busy(&p.pane, p.busy);
             }
@@ -230,16 +250,22 @@ impl App {
         self.live.get(id).is_some_and(|t| t.iter().any(|p| p.busy))
     }
 
-    /// What to name when telling how a worktree is: the program that works, else the one in its active tab.
-    fn running(&self, id: &str) -> Option<&str> {
-        let t = self.live.get(id)?;
-        let p = t.iter().find(|p| p.busy).or(t.iter().find(|p| p.on)).or(t.first())?;
-        Some(program(&p.cmd))
+    /// The tab that tells how a worktree is.
+    fn foremost(&self, id: &str) -> Option<&Pane> {
+        foremost(self.live.get(id)?.iter())
+    }
+
+    fn waits(&self, id: &str) -> bool {
+        self.foremost(id).is_some_and(|p| p.look() == State::Waiting)
     }
 
     fn update_status(&mut self, wts: &[Wt]) {
         let esc = |s: &str| s.replace('#', "##").replace('%', "%%");
         let mut left = String::new();
+        match wts.iter().filter(|w| self.waits(&w.id())).count() {
+            0 => {}
+            n => left += &format!(" #[fg={}]◆ {} ", hex(theme::SIGNAL), (tr().agents_wait)(n)),
+        }
         match self.prs.prs.iter().filter(|p| p.status().0 == Group::Yours).count() {
             0 => left += " ",
             n => left += &format!(" #[fg={}]◆ {}  ", hex(theme::SIGNAL), (tr().prs_yours)(n)),
@@ -279,16 +305,24 @@ impl App {
         }
     }
 
-    /// What is going on in some repos, for when they are folded: how many work and how many PRs need the user.
-    fn summary<'a>(&self, within: impl Fn(&Path) -> bool, working: bool) -> Vec<Span<'a>> {
+    /// What is going on in some repos: how many PRs need the user and, if they are folded, how many agents work or
+    /// wait for the user (unfolded, each worktree tells).
+    fn summary<'a>(&self, within: impl Fn(&Path) -> bool, folded: bool) -> Vec<Span<'a>> {
         let mut out = vec![];
         let yours = self.prs.prs.iter().filter(|x| within(&x.path) && x.status().0 == Group::Yours).count();
         if yours > 0 {
             out.push(fg(format!(" ◆ {yours}"), SIGNAL));
         }
-        let busy = if working { load().iter().filter(|w| within(&w.repo) && self.working(&w.id())).count() } else { 0 };
-        if busy > 0 {
-            out.push(fg(format!(" ● {busy}"), CURRENT));
+        if folded {
+            let ids: Vec<String> = load().iter().filter(|w| within(&w.repo)).map(Wt::id).collect();
+            let waiting = ids.iter().filter(|id| self.waits(id)).count();
+            if waiting > 0 {
+                out.insert(0, fg(format!(" {}", (tr().agents_short)(waiting)), SIGNAL));
+            }
+            let busy = ids.iter().filter(|id| self.working(id)).count();
+            if busy > 0 {
+                out.push(fg(format!(" ● {busy}"), CURRENT));
+            }
         }
         out.push(" ".into());
         out
@@ -306,8 +340,8 @@ impl App {
         }
         if gone {
             right.push(fg("✕ ", CORAL));
-        } else if self.working(&id) {
-            right.push(fg("● ", CURRENT));
+        } else if let Some(s) = self.foremost(&id).map(Pane::look).filter(|s| *s != State::Idle) {
+            right.push(fg(format!("{} ", look(s).0), look(s).1));
         }
         let name = if tabs > 0 || selected { fg(w.name.clone(), FOAM) } else { fg(w.name.clone(), MUTED) };
         let (last, above) = trail.split_last().unwrap_or((&true, &[]));
@@ -315,12 +349,17 @@ impl App {
         let branch = format!(" {stem}{}", if *last { "╰── " } else { "├── " });
         let mut lines = vec![lr(width, vec![fg(branch, LINE), name], right)];
         if selected {
-            let text = match (pr, self.running(&id)) {
+            let text = match (pr, self.foremost(&id)) {
                 _ if gone => fg(tr().gone, CORAL),
+                (_, Some(p)) if matches!(p.look(), State::Waiting | State::Failed | State::Done) => {
+                    let (a, at) = p.agent.unwrap_or((Agent::Done, prs::now()));
+                    let ago = (tr().ago)(&prs::ago(prs::now().saturating_sub(at)));
+                    fg(format!("{}, {ago}", a.text()), look(p.look()).1)
+                }
                 (Some((number, (_, s, text))), _) => fg(format!("#{number} {text}"), look(s).1),
                 (None, None) => fg(tr().unopened, MUTED),
-                (None, Some(cmd)) if self.working(&id) => fg((tr().working)(cmd), CURRENT),
-                (None, Some(cmd)) => fg((tr().idle)(cmd), MUTED),
+                (None, Some(p)) if p.busy => fg((tr().working)(program(&p.cmd)), CURRENT),
+                (None, Some(p)) => fg((tr().idle)(program(&p.cmd)), MUTED),
             };
             let branch = format!(" {stem}{}", if *last { "    " } else { "│   " });
             lines.push(lr(width, vec![fg(branch, LINE), text], vec![fg(format!(" {} ", w.port()), MUTED)]));
@@ -541,9 +580,12 @@ pub fn switch() -> Res<()> {
             let mut items = vec![];
             for (i, wt) in hits.iter().enumerate() {
                 let id = wt.id();
-                let (g, c) = look(if live.iter().any(|p| p.wt == id && p.busy) { State::Working } else { State::Idle });
+                let mine = foremost(live.iter().filter(|p| p.wt == id));
+                let (g, c) = look(mine.map_or(State::Idle, Pane::look));
                 let mut left = vec![" ".into(), fg(g, c), " ".into(), fg(format!("{}/", wt.repo_name()), MUTED), wt.name.clone().bold().fg(FOAM)];
-                if let Some(p) = pr_of(wt) {
+                if let Some((a, _)) = mine.filter(|p| matches!(p.look(), State::Waiting | State::Failed | State::Done)).and_then(|p| p.agent) {
+                    left.push(fg(format!("  {}", a.text()), c));
+                } else if let Some(p) = pr_of(wt) {
                     let (_, s, t) = p.status();
                     left.push(fg(format!("  {} #{} {t}", look(s).0, p.number), look(s).1));
                 } else if tabs_of(&id) == 0 {

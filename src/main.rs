@@ -1,3 +1,4 @@
+mod agent;
 mod i18n;
 mod orc;
 mod prs;
@@ -6,6 +7,7 @@ mod tui;
 
 use std::{env, fs, path::{Path, PathBuf}, process::Command, thread, time::Duration};
 
+use agent::Agent;
 use i18n::tr;
 use theme::hex;
 
@@ -14,6 +16,8 @@ pub type Res<T> = Result<T, String>;
 pub const UI: &str = "=orcux"; // `=` = exact match; plain "orcux" would prefix-match "orcux-bg"
 const UI_NAME: &str = "orcux";
 const BG: &str = "orcux-bg"; // hidden session: one window per worktree terminal
+/// Claude Code loads the plugins in these folders, for that terminal only.
+const PLUGINS: &str = "CLAUDE_CODE_PLUGIN_DIRS";
 pub const SIDEBAR: &str = "__sidebar";
 pub const RAIL: &str = "__prs"; // right pane: pull requests
 /// Opt+w: what macOS types for it on the Spanish and US layouts, and what terminals with Option as Meta send.
@@ -70,12 +74,18 @@ impl Wt {
     fn env(&self) -> Vec<String> {
         let compose: String = self.id().to_lowercase().chars()
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
-        vec![
+        let mut all = vec![
             format!("ORCUX_ID={}", self.id()),
             format!("ORCUX_PORT={}", self.port()),
             format!("ORCUX_SLOT={}", self.slot),
             format!("COMPOSE_PROJECT_NAME={compose}"),
-        ]
+        ];
+        if let Some(dir) = agent::plugin() {
+            let (dir, others) = (dir.display().to_string(), env::var(PLUGINS).unwrap_or_default());
+            let others: Vec<&str> = others.split(':').filter(|d| !d.is_empty() && *d != dir).collect();
+            all.push(format!("{PLUGINS}={}", others.into_iter().chain([dir.as_str()]).collect::<Vec<_>>().join(":")));
+        }
+        all
     }
 }
 
@@ -420,15 +430,45 @@ pub struct Pane {
     pub on: bool,
     pub busy: bool,
     pub cmd: String,
+    /// what its agent said, and when
+    pub agent: Option<(Agent, u64)>,
+}
+
+impl Pane {
+    pub fn look(&self) -> prs::State {
+        match self.agent.map(|a| a.0) {
+            Some(a) if a.waits() => prs::State::Waiting,
+            Some(Agent::Failed) => prs::State::Failed,
+            _ if self.busy => prs::State::Working,
+            Some(Agent::Done) => prs::State::Done,
+            _ => prs::State::Idle,
+        }
+    }
+}
+
+/// The tab of a worktree that matters most: one that waits for the user, then failed, working, done and idle.
+pub fn foremost<'a>(tabs: impl Iterator<Item = &'a Pane>) -> Option<&'a Pane> {
+    let rank = |s: prs::State| match s {
+        prs::State::Waiting => 0,
+        prs::State::Failed => 1,
+        prs::State::Working => 2,
+        prs::State::Done => 3,
+        prs::State::Idle => 4,
+    };
+    tabs.min_by_key(|p| (rank(p.look()), !p.on))
 }
 
 pub fn panes() -> Vec<Pane> {
-    let f = "#{pane_id}\t#{@orcux}\t#{@orcux_tab}\t#{@orcux_on}\t#{@orcux_busy}\t#{pane_current_command}";
+    let f = "#{pane_id}\t#{@orcux}\t#{@orcux_tab}\t#{@orcux_on}\t#{@orcux_busy}\t#{pane_current_command}\t#{@orcux_state}";
     tmux(&["list-panes", "-a", "-F", f]).unwrap_or_default().lines()
         .map(|l| {
             let mut p = l.split('\t').map(String::from);
             let mut next = || p.next().unwrap_or_default();
-            Pane { pane: next(), wt: next(), tab: next().parse().unwrap_or(1), on: next() == "1", busy: next() == "1", cmd: next() }
+            let (pane, wt, tab, on, busy, cmd) = (next(), next(), next().parse().unwrap_or(1), next() == "1", next() == "1", next());
+            // back in the shell: the agent is gone, whatever it said last
+            let shell = ["zsh", "bash", "fish", "sh", "nu"].contains(&cmd.trim_start_matches('-'));
+            let agent = if shell { None } else { Agent::parse(&next()) };
+            Pane { pane, wt, tab, on, busy, cmd, agent }
         })
         .filter(|p| !p.wt.is_empty())
         .collect()
@@ -857,7 +897,8 @@ pub fn tab_bar() -> String {
     let one = |p: &Pane| {
         let cmd = tui::program(&p.cmd).replace('#', "##");
         let (hull, foam, muted) = (hex(theme::HULL), hex(theme::FOAM), hex(theme::MUTED));
-        let dot = if p.busy { format!("#[fg={}]● ", hex(theme::CURRENT)) } else { String::new() };
+        let (glyph, color) = tui::look_hex(p.look());
+        let dot = if p.look() == prs::State::Idle { String::new() } else { format!("#[fg={}]{glyph} ", hex(color)) };
         if p.pane == pane {
             // same fill as the terminal below it: they read as one card
             format!("#[bg={hull},fg={muted}]  {} {dot}#[fg={foam},bold]{cmd}  #[default]", p.tab)
@@ -899,6 +940,10 @@ fn cli(a: &[&str]) -> Res<()> {
     match a {
         [] => attach(),
         ["sidebar"] => tui::run(),
+        ["hook", event] => {
+            agent::hook(event);
+            Ok(())
+        }
         ["rail"] => tui::rail(),
         ["prs"] => prs::print(),
         ["switch"] => tui::switch(),
