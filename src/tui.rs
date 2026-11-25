@@ -321,7 +321,7 @@ impl App {
         blocks(f, list, items, self.active);
         if self.msg.is_empty() {
             let lines = vec![
-                keys(&[("n", tr().k_new), ("d", tr().k_delete), ("t", tr().k_tab)]),
+                keys(&[("n", tr().k_new), ("A", tr().k_add), ("d", tr().k_delete)]),
                 keys(&[("?", tr().k_commands), ("Opt+w", tr().k_switch)]),
             ];
             f.render_widget(Paragraph::new(lines), foot);
@@ -423,9 +423,21 @@ pub fn run() -> Res<()> {
                 Some(r) => app.popup(tr().title_new, DIALOG, &["dialog", "new", &r.to_string_lossy()]),
                 None => app.error(tr().no_repos),
             },
-            KeyCode::Char('d') => if let Some(Row::Wt(w)) = app.selected() {
-                let (id, title) = (w.id(), if w.at.is_some() { tr().title_unregister } else { tr().title_rm });
-                app.popup(title, DIALOG, &["dialog", "rm", &id]);
+            KeyCode::Char('A') => {
+                // new folders and clones go beside the selected repo
+                let base = app.repo_of_selected().and_then(|r| Some(r.parent()?.to_path_buf())).unwrap_or_else(home);
+                app.popup(tr().title_add, (76, 11), &["dialog", "add", &base.to_string_lossy()]);
+            }
+            KeyCode::Char('d') => match app.selected() {
+                Some(Row::Wt(w)) => {
+                    let (id, title) = (w.id(), if w.at.is_some() { tr().title_unregister } else { tr().title_rm });
+                    app.popup(title, DIALOG, &["dialog", "rm", &id]);
+                }
+                Some(Row::Repo(r)) => {
+                    let r = r.to_string_lossy().to_string();
+                    app.popup(tr().title_unregister, DIALOG, &["dialog", "rmrepo", &r]);
+                }
+                None => {}
             },
             KeyCode::Enter => if let Some(Row::Wt(w)) = app.selected() {
                 if let Err(e) = show(&w.clone()) {
@@ -1145,6 +1157,83 @@ pub fn dialog_new(repo: &Path) -> Res<()> {
                     }
                 }
                 _ => {}
+            }
+        }
+    })
+}
+
+/// The folders that complete a half-written path: their longest common beginning.
+fn complete(text: &str) -> Option<String> {
+    let (dir, part) = text.rsplit_once('/')?;
+    let names: Vec<String> = fs::read_dir(expand(&format!("{dir}/"))).ok()?.flatten()
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with(part) && (part.starts_with('.') || !n.starts_with('.')))
+        .collect();
+    let first = names.first()?;
+    let same = first.char_indices().map(|(i, c)| i + c.len_utf8()).take_while(|i| names.iter().all(|n| n.starts_with(&first[..*i]))).last().unwrap_or(0);
+    Some(format!("{dir}/{}{}", &first[..same], if names.len() == 1 { "/" } else { "" }))
+}
+
+pub fn dialog_add(base: &Path) -> Res<()> {
+    dialog(|term| {
+        let (mut text, mut err) = (String::new(), String::new());
+        loop {
+            let what = if text.trim().is_empty() { None } else { Some(project(&text, base)) };
+            let preview = match &what {
+                None => Line::default(),
+                Some(Ok(Project::Register(p))) => Line::from((tr().will_register)(&tilde(p))).fg(MUTED),
+                Some(Ok(Project::Clone(_, p))) => Line::from((tr().will_clone)(&tilde(p))).fg(MUTED),
+                Some(Ok(Project::Create(p))) => Line::from((tr().will_create)(&tilde(p))).fg(MUTED),
+                Some(Err(e)) => Line::from(e.clone()).fg(MUTED),
+            };
+            let lines = |status: Line<'static>| vec![
+                Line::from(format!("{}:", tr().label_project)).fg(MUTED),
+                Line::from(format!("{text}▏")).fg(FOAM),
+                Line::default(),
+                status,
+            ];
+            let status = if err.is_empty() { preview } else { Line::from(err.clone()).fg(CORAL) };
+            draw_dialog(term, lines(status), tr().hint_add)?;
+            match key()? {
+                Some(KeyCode::Esc) => return Ok(()),
+                Some(KeyCode::Backspace) => { text.pop(); err.clear(); }
+                Some(KeyCode::Tab) => if let Some(t) = complete(&text) {
+                    text = t;
+                },
+                Some(KeyCode::Char(c)) => { text.push(c); err.clear(); }
+                Some(KeyCode::Enter) => if let Some(Ok(p)) = &what {
+                    draw_dialog(term, lines(Line::from(tr().cloning).fg(CURRENT)), "")?;
+                    match add_project(p) {
+                        Ok(_) => return Ok(()),
+                        Err(e) => err = short(&e),
+                    }
+                },
+                _ => {}
+            }
+        }
+    })
+}
+
+pub fn dialog_rm_repo(repo: &Path) -> Res<()> {
+    dialog(|term| {
+        let mut err = String::new();
+        loop {
+            let (ask, name) = (tr().ask_unregister, repo.file_name().unwrap_or_default().to_string_lossy().to_string());
+            let lines = vec![
+                Line::from(vec![ask.0.into(), name.bold().fg(FOAM), ask.1.into()]),
+                Line::from(tr().kept_repo).fg(MUTED),
+                Line::default(),
+                Line::from(err.clone()).fg(CORAL),
+            ];
+            draw_dialog(term, lines, tr().hint_unregister)?;
+            match key()? {
+                None => {}
+                Some(KeyCode::Char('y')) if err.is_empty() => match remove_repo(repo) {
+                    Ok(()) => return Ok(()),
+                    Err(e) => err = e,
+                },
+                Some(_) => return Ok(()),
             }
         }
     })

@@ -16,6 +16,7 @@ pub struct Text {
     pub commands: &'static [(&'static str, &'static [(&'static str, &'static str)])],
     // keys in the footers: the verb after each key
     pub k_new: &'static str,
+    pub k_add: &'static str,
     pub k_delete: &'static str,
     pub k_commands: &'static str,
     pub k_switch: &'static str,
@@ -30,16 +31,17 @@ pub struct Text {
     pub k_hide: &'static str,
     pub k_refresh: &'static str,
     pub k_back: &'static str,
-    pub k_tab: &'static str,
     // dialogs
     pub title_commands: &'static str,
     pub title_new: &'static str,
+    pub title_add: &'static str,
     pub title_error: &'static str,
     pub title_unregister: &'static str,
     pub title_rm: &'static str,
     pub title_pr: &'static str,
     pub title_close: &'static str,
     pub hint_new: &'static str,
+    pub hint_add: &'static str,
     pub hint_pr: &'static str,
     pub hint_unregister: &'static str,
     pub hint_rm: &'static str,
@@ -49,6 +51,15 @@ pub struct Text {
     pub hint_close: &'static str,
     pub hint_view: &'static str,
     pub label_repo: &'static str,
+    pub label_project: &'static str,
+    pub will_register: fn(&str) -> String,
+    pub will_clone: fn(&str) -> String,
+    pub will_create: fn(&str) -> String,
+    pub cloning: &'static str,
+    pub path_missing: fn(&str) -> String,
+    pub bad_name: &'static str,
+    pub repo_listed: &'static str,
+    pub repo_has_wts: fn(usize) -> String,
     pub label_name: &'static str,
     pub label_branch: &'static str,
     pub label_port: &'static str,
@@ -61,6 +72,7 @@ pub struct Text {
     pub ask_close: (&'static str, &'static str),
     pub kept_rm: &'static str,
     pub kept_unregister: &'static str,
+    pub kept_repo: &'static str,
     pub kept_close: &'static str,
     // sidebar, status bar and switcher
     pub prs_yours: fn(usize) -> String,
@@ -224,7 +236,7 @@ mod tests {
                 assert!(width(usage) <= 40 && width(desc) <= 53, "{lang}: {usage}");
             }
             for k in [
-                vec![("n", t.k_new), ("d", t.k_delete), ("t", t.k_tab)],
+                vec![("n", t.k_new), ("A", t.k_add), ("d", t.k_delete)],
                 vec![("?", t.k_commands), ("Opt+w", t.k_switch)],
             ] {
                 assert!(keys(&k) <= 36, "{lang}: sidebar {k:?}");
@@ -236,7 +248,7 @@ mod tests {
             ] {
                 assert!(keys(&k) <= 44, "{lang}: rail {k:?}");
             }
-            for s in [t.hint_new, t.hint_pr, t.hint_unregister, t.hint_rm, t.hint_force, t.hint_any, t.kept_rm, t.kept_unregister, t.kept_close, t.fetching] {
+            for s in [t.hint_new, t.hint_pr, t.hint_unregister, t.hint_rm, t.hint_force, t.hint_any, t.kept_rm, t.kept_unregister, t.kept_close, t.kept_repo, t.hint_add, t.fetching] {
                 assert!(width(s) <= 60, "{lang}: {s}");
             }
             for s in [t.label_repo, t.label_name, t.label_branch, t.label_port] {

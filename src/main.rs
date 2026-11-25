@@ -143,10 +143,87 @@ fn add_repo(p: &Path) -> Res<PathBuf> {
     let mut r = repos();
     if !r.contains(&main) {
         r.push(main.clone());
-        let s: String = r.iter().map(|p| format!("{}\n", p.display())).collect();
-        fs::write(state_dir().join("repos"), s).map_err(|e| e.to_string())?;
+        save_repos(&r)?;
     }
     Ok(main)
+}
+
+fn save_repos(r: &[PathBuf]) -> Res<()> {
+    let s: String = r.iter().map(|p| format!("{}\n", p.display())).collect();
+    fs::write(state_dir().join("repos"), s).map_err(|e| e.to_string())
+}
+
+/// Takes a repo off the sidebar; nothing is deleted. Its worktrees must have left before.
+pub fn remove_repo(repo: &Path) -> Res<()> {
+    match load().iter().filter(|w| w.repo == repo).count() {
+        0 => save_repos(&repos().into_iter().filter(|r| r != repo).collect::<Vec<_>>()),
+        n => Err((tr().repo_has_wts)(n)),
+    }
+}
+
+/// What adding a project means for a text: an existing path, something to clone, or a new folder in `base`.
+pub enum Project {
+    Register(PathBuf),
+    Clone(String, PathBuf),
+    Create(PathBuf),
+}
+
+/// A path as people write it: the home folder is ~.
+pub fn tilde(p: &Path) -> String {
+    p.strip_prefix(home()).map_or_else(|_| p.display().to_string(), |r| format!("~/{}", r.display()))
+}
+
+pub fn expand(path: &str) -> PathBuf {
+    match path.strip_prefix('~') {
+        Some("") => home(),
+        Some(rest) if rest.starts_with('/') => home().join(&rest[1..]),
+        _ => PathBuf::from(path),
+    }
+}
+
+pub fn project(text: &str, base: &Path) -> Res<Project> {
+    let text = text.trim();
+    if text.contains("://") || text.starts_with("git@") {
+        let name = text.trim_end_matches('/').trim_end_matches(".git").rsplit(['/', ':']).next().unwrap_or("");
+        return Ok(Project::Clone(text.into(), base.join(name)));
+    }
+    if text.starts_with(['/', '~', '.']) {
+        let p = expand(text);
+        let p = if p.is_absolute() { p } else { base.join(p) };
+        return if p.exists() { Ok(Project::Register(p)) } else { Err((tr().path_missing)(&tilde(&p))) };
+    }
+    if text.contains('/') {
+        return Err(tr().bad_name.into());
+    }
+    let p = base.join(text);
+    Ok(if p.exists() { Project::Register(p) } else { Project::Create(p) })
+}
+
+pub fn add_project(p: &Project) -> Res<PathBuf> {
+    let path = match p {
+        Project::Register(path) => {
+            if repos().contains(&path.canonicalize().unwrap_or_else(|_| path.clone())) {
+                return Err(tr().repo_listed.into());
+            }
+            path
+        }
+        Project::Clone(url, path) => {
+            if path.exists() {
+                return Err((tr().exists)(&tilde(path)));
+            }
+            let to = path.to_str().ok_or(tr().non_utf8)?;
+            run("env", &["GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -oBatchMode=yes", "git", "clone", "-q", "--", url, to], None)?;
+            path
+        }
+        Project::Create(path) => {
+            fs::create_dir(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            git(path, &["init", "-q", "-b", "main"])?;
+            git(path, &["commit", "-q", "--allow-empty", "-m", "Initial commit"])?; // a worktree needs a commit to start from
+            path
+        }
+    };
+    git(path, &["rev-parse", "--git-dir"]).map_err(|_| tr().not_repo)?;
+    add_repo(path)
 }
 
 pub fn find(q: Option<&str>) -> Res<Wt> {
@@ -752,6 +829,8 @@ fn cli(a: &[&str]) -> Res<()> {
         ["switch"] => tui::switch(),
         ["commands"] => tui::commands(),
         ["dialog", "new", repo] => tui::dialog_new(Path::new(repo)),
+        ["dialog", "add", base] => tui::dialog_add(Path::new(base)),
+        ["dialog", "rmrepo", repo] => tui::dialog_rm_repo(Path::new(repo)),
         ["dialog", "rm", id] => tui::dialog_rm(&find(Some(id))?),
         ["dialog", "pr", repo, branch, label] => tui::dialog_pr(Path::new(repo), branch, label),
         ["dialog", "view", url] => tui::dialog_view(url),
@@ -832,6 +911,14 @@ fn cli(a: &[&str]) -> Res<()> {
         ["env", rest @ ..] => {
             find(rest.first().copied())?.env().iter().for_each(|e| println!("export {e}"));
             Ok(())
+        }
+        ["repo", "rm", rest @ ..] => {
+            let p = rest.first().map(PathBuf::from).unwrap_or(env::current_dir().map_err(|e| e.to_string())?);
+            let p = p.canonicalize().unwrap_or(p); // it may be gone from disk
+            if !repos().contains(&p) {
+                return Err((tr().path_missing)(&p.to_string_lossy()));
+            }
+            remove_repo(&p)
         }
         ["repo", "add", rest @ ..] => {
             let p = rest.first().map(PathBuf::from).unwrap_or(env::current_dir().map_err(|e| e.to_string())?);
