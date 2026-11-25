@@ -206,14 +206,15 @@ impl App {
     fn wt_lines<'a>(&self, w: &Wt, width: u16) -> Vec<Line<'a>> {
         let id = w.id();
         let (dot, col) = look(if self.working(&id) { State::Working } else { State::Idle });
-        let pr = self.prs.prs.iter().find(|p| p.path == w.repo && p.branch == w.name);
+        let pr = self.prs.prs.iter().find(|p| p.is_of(w));
         let second = match (pr, self.live.get(&id)) {
+            _ if !w.path().exists() => fg("la carpeta ya no existe", CORAL),
             (Some(p), _) => {
                 let (_, s, text) = p.status();
                 let (g, c) = look(s);
                 fg(format!("{g} #{} {text}", p.number), c)
             }
-            (None, None) => fg("terminal cerrado", MUTED),
+            (None, None) => fg("sin abrir", MUTED),
             (None, Some(cmd)) if self.working(&id) => fg(format!("trabajando, {}", program(cmd)), CURRENT),
             (None, Some(cmd)) => fg(format!("parado, {}", program(cmd)), MUTED),
         };
@@ -319,8 +320,8 @@ pub fn run() -> Res<()> {
                 None => app.error("Sin repos: ejecuta `orcux repo add <ruta>`"),
             },
             KeyCode::Char('d') => if let Some(Row::Wt(w)) = app.selected() {
-                let id = w.id();
-                app.popup("Borrar worktree", DIALOG, &["dialog", "rm", &id]);
+                let (id, title) = (w.id(), if w.at.is_some() { "Quitar de orcux" } else { "Borrar worktree" });
+                app.popup(title, DIALOG, &["dialog", "rm", &id]);
             },
             KeyCode::Enter => if let Some(Row::Wt(w)) = app.selected() {
                 if let Err(e) = show(&w.clone()) {
@@ -340,7 +341,7 @@ pub fn switch() -> Res<()> {
     let visible = terminal_pane().map(|p| p.1).unwrap_or_default();
     let (wts, prs, busy) = (by_recent(&visible), prs::cached().prs, busy_ids());
     let live: Vec<String> = panes().into_iter().map(|p| p.1).collect();
-    let pr_of = |w: &Wt| prs.iter().find(|p| p.path == w.repo && p.branch == w.name);
+    let pr_of = |w: &Wt| prs.iter().find(|p| p.is_of(w));
     let text = |w: &Wt| format!("{} {}", w.id(), pr_of(w).map(|p| format!("#{} {}", p.number, p.title)).unwrap_or_default()).to_lowercase();
     let (mut query, mut sel, mut err) = (String::new(), None, String::new());
     dialog(|term| loop {
@@ -361,7 +362,7 @@ pub fn switch() -> Res<()> {
                     let (_, s, t) = p.status();
                     left.push(fg(format!("  {} #{} {t}", look(s).0, p.number), look(s).1));
                 } else if !live.contains(&id) {
-                    left.push(fg("  terminal cerrado", MUTED));
+                    left.push(fg("  sin abrir", MUTED));
                 }
                 let here = if id == visible { "visible  " } else { "" };
                 items.push((vec![lr(w, left, vec![fg(format!(" {here}{} ", wt.port()), MUTED)])], i == cur));
@@ -653,18 +654,23 @@ pub fn dialog_rm(w: &Wt) -> Res<()> {
     dialog(|term| {
         let mut err = String::new();
         loop {
+            let (ask, kept) = if w.at.is_some() {
+                ("¿Quitar de orcux ", "La carpeta y la rama se conservan. Se cierra su terminal.")
+            } else {
+                ("¿Borrar ", "La rama se conserva.")
+            };
             let lines = |status: Line<'static>| vec![
-                Line::from(vec!["¿Borrar ".into(), w.id().bold().fg(FOAM), "?".into()]),
-                Line::from("La rama se conserva.").fg(MUTED),
+                Line::from(vec![ask.into(), w.id().bold().fg(FOAM), "?".into()]),
+                Line::from(kept).fg(MUTED),
                 Line::default(),
                 status,
             ];
-            let hint = if err.is_empty() { "y sí  D forzar  otra tecla: no" } else { "D forzar (pierde los cambios)  otra tecla: no" };
+            let hint = if w.at.is_some() { "y sí  otra tecla: no" } else if err.is_empty() { "y sí  D forzar  otra tecla: no" } else { "D forzar (pierde los cambios)  otra tecla: no" };
             draw_dialog(term, lines(Line::from(err.clone()).fg(CORAL)), hint)?;
             let force = match key()? {
                 None => continue,
                 Some(KeyCode::Char('y')) if err.is_empty() => false,
-                Some(KeyCode::Char('D')) => true,
+                Some(KeyCode::Char('D')) if w.at.is_none() => true,
                 Some(_) => return Ok(()),
             };
             draw_dialog(term, lines(Line::from("Borrando…").fg(CURRENT)), "")?;

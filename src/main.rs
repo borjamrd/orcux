@@ -41,6 +41,7 @@ pub const COMMANDS: &[(&str, &[(&str, &str)])] = &[
         ("orcux", "abrir la interfaz (sidebar + terminal)"),
         ("orcux new <nombre> [--repo P] [--cmd C]", "crear worktree, puertos y terminal"),
         ("orcux rm <wt> [--force]", "borrar el worktree (conserva la rama)"),
+        ("orcux import <ruta...> [--yes]", "registrar worktrees existentes, sin moverlos"),
         ("orcux ls", "listar los worktrees"),
         ("orcux show <wt>", "mostrar <wt> en la interfaz"),
         ("orcux switch", "elegir worktree en una lista (Opt+w)"),
@@ -55,6 +56,7 @@ pub const COMMANDS: &[(&str, &[(&str, &str)])] = &[
     ("Notas", &[
         ("<wt>", "repo/nombre, o solo el nombre si es único"),
         ("ORCUX_PORT", "10000 + slot*100: 100 puertos por worktree"),
+        ("Importados", "borrarlos solo los quita de orcux"),
         ("COMPOSE_PROJECT_NAME", "propio de cada worktree"),
     ]),
 ];
@@ -75,6 +77,8 @@ pub struct Wt {
     pub repo: PathBuf,
     pub name: String,
     pub slot: u32,
+    /// where it is, when it was imported instead of created by orcux
+    pub at: Option<PathBuf>,
 }
 
 impl Wt {
@@ -85,7 +89,18 @@ impl Wt {
         format!("{}/{}", self.repo_name(), self.name)
     }
     pub fn path(&self) -> PathBuf {
+        if let Some(p) = &self.at {
+            return p.clone();
+        }
         home().join("orcux").join(self.repo_name()).join(&self.name)
+    }
+    /// The branch it has checked out now (an imported one is not named after it). Read from git's files: this
+    /// runs for every worktree on every redraw.
+    pub fn branch(&self) -> Option<String> {
+        let link = fs::read_to_string(self.path().join(".git")).ok()?;
+        let dir = self.path().join(link.strip_prefix("gitdir:")?.trim());
+        let head = fs::read_to_string(dir.join("HEAD")).ok()?;
+        Some(head.trim().strip_prefix("ref: refs/heads/")?.into())
     }
     pub fn port(&self) -> u32 {
         10000 + self.slot * 100
@@ -140,13 +155,14 @@ pub fn load() -> Vec<Wt> {
     fs::read_to_string(state_dir().join("worktrees.tsv")).unwrap_or_default().lines()
         .filter_map(|l| {
             let mut p = l.split('\t');
-            Some(Wt { repo: p.next()?.into(), name: p.next()?.into(), slot: p.next()?.parse().ok()? })
+            Some(Wt { repo: p.next()?.into(), name: p.next()?.into(), slot: p.next()?.parse().ok()?, at: p.next().filter(|s| !s.is_empty()).map(PathBuf::from) })
         })
         .collect()
 }
 
 fn save(wts: &[Wt]) -> Res<()> {
-    let s: String = wts.iter().map(|w| format!("{}\t{}\t{}\n", w.repo.display(), w.name, w.slot)).collect();
+    let at = |w: &Wt| w.at.as_ref().map(|p| format!("\t{}", p.display())).unwrap_or_default();
+    let s: String = wts.iter().map(|w| format!("{}\t{}\t{}{}\n", w.repo.display(), w.name, w.slot, at(w))).collect();
     fs::write(state_dir().join("worktrees.tsv"), s).map_err(|e| e.to_string())
 }
 
@@ -210,7 +226,7 @@ pub fn create(repo: &Path, name: &str, cmd: Option<&str>) -> Res<Wt> {
         return Err(format!("{name} already exists"));
     }
     let slot = free_slot(&wts);
-    let wt = Wt { repo: repo.clone(), name: name.into(), slot };
+    let wt = Wt { repo: repo.clone(), name: name.into(), slot, at: None };
     let path = wt.path();
     let p = path.to_str().ok_or("non-utf8 path")?;
     let has = |r: &str| git(&repo, &["rev-parse", "--verify", "--quiet", r]).is_ok();
@@ -247,9 +263,62 @@ fn copy_includes(repo: &Path, dst: &Path) -> Res<()> {
     Ok(())
 }
 
+/// An existing worktree as orcux would register it, where it is. The slot is set when it is registered.
+fn importable(p: &Path, wts: &[Wt]) -> Res<Wt> {
+    let p = p.canonicalize().map_err(|e| e.to_string())?;
+    let out = git(&p, &["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir"])
+        .map_err(|_| "no es un worktree de git")?;
+    let [top, dir, common] = out.lines().collect::<Vec<_>>()[..] else { return Err("no es un worktree de git".into()) };
+    if Path::new(top) != p {
+        return Err("no es la raíz de un worktree".into());
+    }
+    if dir == common {
+        return Err("es la carpeta principal del repo".into());
+    }
+    let repo = Path::new(common).parent().ok_or("repo sin carpeta")?.to_path_buf();
+    let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+    if wts.iter().any(|w| w.path().canonicalize().is_ok_and(|q| q == p)) {
+        return Err("ya está en orcux".into());
+    }
+    let w = Wt { repo, name, slot: 0, at: Some(p) };
+    match wts.iter().find(|x| x.id() == w.id()) {
+        Some(_) => Err(format!("ya hay un {}", w.id())),
+        None => Ok(w),
+    }
+}
+
+/// Registers existing worktrees without moving or changing them; without `yes`, only lists what it would do.
+fn import(paths: &[&str], yes: bool) -> Res<()> {
+    let mut wts = load();
+    let mut n = 0;
+    for p in paths {
+        match importable(Path::new(p), &wts) {
+            Ok(mut w) => {
+                w.slot = free_slot(&wts);
+                println!("+ {:<50} :{:<6} {}", w.id(), w.port(), w.branch().unwrap_or_default());
+                if yes {
+                    add_repo(&w.repo)?;
+                }
+                wts.push(w);
+                n += 1;
+            }
+            Err(e) => println!("- {p}: {e}"),
+        }
+    }
+    if yes {
+        save(&wts)?;
+        println!("{n} importados");
+    } else {
+        println!("{n} por importar. Repite con --yes para registrarlos.");
+    }
+    Ok(())
+}
+
 pub fn remove(w: &Wt, force: bool) -> Res<()> {
     let path = w.path();
-    if path.exists() {
+    if w.at.is_some() {
+        // imported: not ours to delete, not even with --force
+    } else if path.exists() {
         let p = path.to_str().unwrap();
         let args: &[&str] = if force { &["worktree", "remove", "--force", p] } else { &["worktree", "remove", p] };
         git(&w.repo, args)?; // first: a dirty worktree fails here, before we touch its terminal
@@ -302,6 +371,7 @@ fn spawn(w: &Wt) -> Res<String> {
 fn ensure_pane(w: &Wt) -> Res<String> {
     match pane_of(&w.id()) {
         Some(p) => Ok(p),
+        None if !w.path().exists() => Err(format!("la carpeta ya no existe: {}", w.path().display())),
         None => spawn(w),
     }
 }
@@ -546,6 +616,10 @@ fn cli(a: &[&str]) -> Res<()> {
             Ok(())
         }
         ["rm", q, rest @ ..] => remove(&find(Some(q))?, rest.contains(&"--force")),
+        ["import", rest @ ..] if rest.iter().any(|p| *p != "--yes") => {
+            let paths: Vec<&str> = rest.iter().copied().filter(|p| *p != "--yes").collect();
+            import(&paths, rest.contains(&"--yes"))
+        }
         ["ls"] => {
             let live: Vec<String> = panes().into_iter().map(|p| p.1).collect();
             for w in load() {

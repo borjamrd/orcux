@@ -28,7 +28,7 @@ Model:
 - State in plain files in `~/.local/state/orcux/`: `worktrees.tsv` (repo, name, slot), `repos`, `recent` (ids by last `show`) and `prs.tsv` (cache).
 - Opt+w opens `orcux switch` in a popup. Terminal.app cannot send Cmd keys, and without Option as Meta it types a character (`æ` on the Spanish layout), so those characters are bound in the root table (`SWITCH_KEYS`, set by the sidebar at start). tmux key tables are global: the binding checks the session name and passes the key on elsewhere. The sidebar marks working panes with `@orcux_busy`, for processes that do not watch screens.
 - Prompts and errors are popups, never sidebar text: the sidebar calls `popup()`, which runs `orcux dialog new|rm|error` (internal) in a centered `display-popup` and blocks until it closes.
-- Worktrees go in `~/orcux/<repo>/<name>`. Each pane gets `ORCUX_PORT=10000+slot*100`, `ORCUX_ID`, `ORCUX_SLOT` and `COMPOSE_PROJECT_NAME` via `tmux -e`.
+- Worktrees go in `~/orcux/<repo>/<name>`. `orcux import` registers existing ones where they are (4th column of `worktrees.tsv`): they are named after their folder, never moved, and `rm`/`d` only unregisters them, even with `--force`. PRs match a worktree by its checked-out branch, read from git's files. Each pane gets `ORCUX_PORT=10000+slot*100`, `ORCUX_ID`, `ORCUX_SLOT` and `COMPOSE_PROJECT_NAME` via `tmux -e`.
 - `.worktreeinclude` in the main checkout is copied into the new worktree (same contract as Orca; literal paths only, globs skipped).
 - New branch from `origin/HEAD` with `--no-track`. If the branch exists locally or on origin, it is reused.
 
@@ -62,7 +62,6 @@ tmux kill-server; rm -rf ~/.cache/orcux-test
 - Docker Compose with fixed ports (fever2: 8010/8012) still collides; those ports would have to read `$ORCUX_PORT`.
 - Working/idle status = "screen changed in the last 3s" (heuristic). Upgrade: Claude Code hooks.
 - Globs in `.worktreeinclude` (`git ls-files -oi --exclude-from`).
-- Importing existing Orca worktrees (`~/orca/workspaces`).
 - A `wait <wt>` command (wait until an agent is idle), like Orca/herdr.
 
 Deliberate simplifications are marked with `ponytail:` comments in the code.

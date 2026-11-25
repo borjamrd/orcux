@@ -113,9 +113,13 @@ impl Pr {
         self.repo.rsplit('/').next().unwrap_or(&self.repo)
     }
 
-    /// The worktree of this PR: same repo, and named after its branch.
+    /// Whether `w` is the worktree of this PR: same repo, with its branch checked out.
+    pub fn is_of(&self, w: &Wt) -> bool {
+        w.repo == self.path && w.branch().as_ref() == Some(&self.branch)
+    }
+
     pub fn worktree<'a>(&self, wts: &'a [Wt]) -> Option<&'a Wt> {
-        wts.iter().find(|w| w.repo == self.path && w.name == self.branch)
+        wts.iter().find(|w| self.is_of(w))
     }
 
     /// Who has to act, how it is going, and the same in words.
