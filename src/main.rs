@@ -438,9 +438,9 @@ impl Pane {
     pub fn look(&self) -> prs::State {
         match self.agent.map(|a| a.0) {
             Some(a) if a.waits() => prs::State::Asking,
-            Some(Agent::Failed) => prs::State::Failed,
+            Some(Agent::Failed) => prs::State::Broken,
             _ if self.busy => prs::State::Working,
-            Some(Agent::Done) => prs::State::Done,
+            Some(Agent::Done) => prs::State::Finished,
             _ => prs::State::Idle,
         }
     }
@@ -450,9 +450,9 @@ impl Pane {
 pub fn foremost<'a>(tabs: impl Iterator<Item = &'a Pane>) -> Option<&'a Pane> {
     let rank = |s: prs::State| match s {
         prs::State::Asking | prs::State::Waiting => 0,
-        prs::State::Failed => 1,
+        prs::State::Broken | prs::State::Failed => 1,
         prs::State::Working => 2,
-        prs::State::Done => 3,
+        prs::State::Finished | prs::State::Done => 3,
         prs::State::Idle => 4,
     };
     tabs.min_by_key(|p| (rank(p.look()), !p.on))
