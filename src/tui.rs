@@ -122,6 +122,16 @@ fn blocks(f: &mut Frame, area: Rect, items: Vec<(Vec<Line>, bool)>, active: bool
     spans.into_iter().map(|(a, b)| (row(a), row(b))).collect() // where each block is on screen: [from, to)
 }
 
+/// The line beside the terminal, in the accent, over column `x` of this pane: it keeps what is behind it.
+fn edge(f: &mut Frame, x: u16) {
+    let area = f.area();
+    for y in area.y..area.bottom() {
+        if let Some(c) = f.buffer_mut().cell_mut((x, y)) {
+            c.set_symbol("│").set_fg(CURRENT);
+        }
+    }
+}
+
 /// The selection of a pane without the focus.
 const DIM: Color = Color::from_u32(0x1f2329);
 
@@ -731,11 +741,14 @@ impl App {
     fn draw(&self, f: &mut Frame) {
         f.render_widget(Block::new().style(Style::new().bg(Color::Reset).fg(FOAM)), f.area()); // the terminal's own ground
         let [_, list, _, foot] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1), Constraint::Length(2)]).areas(f.area());
+        let right = f.area().right().saturating_sub(1);
+        let list = Rect { width: list.width.saturating_sub(1), ..list };
         if let Some(v) = &self.files {
             *self.at.borrow_mut() = v.draw(f, Rect { height: list.height + 1, ..list }, foot, self.active);
+            edge(f, right);
             return;
         }
-        let w = f.area().width;
+        let w = f.area().width - 1; // the last column is the line
         let is_wt = |j: usize| matches!(self.rows.get(j), Some(Row::Wt(..)));
         let mut items = vec![];
         for (i, r) in self.rows.iter().enumerate() {
@@ -774,6 +787,7 @@ impl App {
         } else {
             f.render_widget(Paragraph::new(self.msg.as_str()).wrap(Wrap { trim: true }).fg(CORAL), foot);
         }
+        edge(f, right);
     }
 
     fn popup(&mut self, title: &str, size: (u32, u32), args: &[&str]) {
@@ -1266,7 +1280,10 @@ pub fn rail() -> Res<()> {
             busy = None;
         }
         let mut rows = vec![];
-        if let Err(e) = term.draw(|f| rows = draw_rail(f, &c, &wts, sel, focused, busy.is_some(), &msg)) {
+        if let Err(e) = term.draw(|f| {
+            rows = draw_rail(f, &c, &wts, sel, focused, busy.is_some(), &msg);
+            edge(f, f.area().x);
+        }) {
             break Err(e.to_string());
         }
         let view = |p: &Pr| popup(&format!("#{} {}", p.number, p.repo_name()), (100, 34), &["dialog", "view", &p.url]);

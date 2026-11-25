@@ -903,24 +903,20 @@ pub fn style_ui() -> Res<()> {
     for (k, v) in [("status", "on"), ("mouse", "on"), ("status-style", status.as_str()), ("status-left-length", "120"), ("status-right-length", "80")] {
         tmux(&["set-option", "-t", &t, k, v]).ok();
     }
-    // one color: tmux draws the top line of the active pane with the inactive style
-    let frame = format!("bg={abyss},fg={}", hex(theme::CURRENT));
-    let focus = frame.clone();
-    // titles of the sidebar and the rail cover the line of their border: only the terminal is framed
-    let cover = " ".repeat(240);
-    let rail = format!("#[bg={hull}#,fg={foam}#,bold]  {}  #[default]{cover}", tr().your_prs);
+    let gap = format!("bg={abyss},fg={abyss}");
+    let rail = format!("#[bg={hull}#,fg={foam}#,bold]  {}  #[default]", tr().your_prs);
     // the logo, an "o" of four by four dots, and the name. No commas: it goes inside a tmux conditional
     let blue = hex(theme::CURRENT);
-    let name = format!("#[fg={blue}]⢎#[fg={foam}]⡱ #[bold]orcux{cover}");
+    let name = format!("#[fg={blue}]⢎#[fg={foam}]⡱ #[bold]orcux");
     let titles = format!("#{{?#{{==:#{{@orcux}},{SIDEBAR}}},{name},#{{?#{{==:#{{@orcux}},{RAIL}}},{rail},#{{@orcux_bar}}}}}}");
     for (k, v) in [
         ("window-status-format", ""),
         ("window-status-current-format", ""),
-        // a thin frame around the terminal, in the accent while it has the focus
-        ("pane-border-lines", "single"),
-        ("pane-border-indicators", "off"),
-        ("pane-border-style", frame.as_str()),
-        ("pane-active-border-style", focus.as_str()),
+        // gaps, not lines: tmux draws two cells of line before every title. The sidebar and the rail draw the lines
+        // beside the terminal themselves
+        ("pane-border-lines", "spaces"),
+        ("pane-border-style", gap.as_str()),
+        ("pane-active-border-style", gap.as_str()),
         ("window-style", "bg=default"),
         ("pane-border-status", "top"),
         ("pane-border-format", titles.as_str()),
