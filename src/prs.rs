@@ -256,8 +256,11 @@ fn token(login: &str) -> Option<String> {
     gh(&["auth", "token", "--user", login], Some("")).ok()
 }
 
+/// (account, error)
+type Failed = Vec<(String, String)>;
+
 /// What could be read, plus the accounts that failed with their error.
-fn fetch() -> Res<(Vec<String>, Vec<(String, String)>)> {
+fn fetch() -> Res<(Vec<String>, Failed)> {
     let repos: Vec<(PathBuf, String)> = repos().into_iter()
         .filter_map(|p| Some((p.clone(), slug(&git(&p, &["remote", "get-url", "origin"]).ok()?)?)))
         .collect();
@@ -426,7 +429,7 @@ fn conflicts(repo: &Path, base: &str, head: &str) -> Vec<String> {
 
 /// The number goes up whenever the format of its lines changes: during an update, an old process and a new one
 /// must not overwrite each other's.
-fn cache_file() -> PathBuf {
+pub fn cache_file() -> PathBuf {
     state_dir().join("prs.2.tsv")
 }
 

@@ -1,14 +1,14 @@
-use crate::{agent::{self, Screen}, i18n::tr, prs::{self, Cache, Detail, Group, Pr, State}, *};
+use crate::{agent::{self, Screen}, control::{self, News}, i18n::tr, prs::{self, Cache, Detail, Group, Pr, State}, *};
 use ratatui::{
     crossterm::{event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind}, execute},
     prelude::*,
     widgets::{Block, Paragraph, Wrap},
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     hash::{DefaultHasher, Hash, Hasher},
     io::stdout,
-    sync::mpsc,
+    sync::{atomic::{AtomicBool, Ordering}, mpsc},
     time::Instant,
 };
 
@@ -140,6 +140,114 @@ fn active() -> bool {
     tmux(&["display-message", "-p", "-t", &me, "#{pane_active}"]).is_ok_and(|s| s == "1")
 }
 
+/// What wakes a pane that stays open. Nothing is asked to tmux over and over: it tells.
+enum Wake {
+    Input(Input),
+    /// panes, their marks or what they print
+    Tmux,
+    /// some pane took the focus
+    Focus,
+    Resize,
+    /// that connection
+    Closed(u32),
+}
+
+struct Wakes {
+    tx: mpsc::Sender<Wake>,
+    rx: mpsc::Receiver<Wake>,
+    /// what came together with news of tmux
+    later: VecDeque<Wake>,
+    /// which connection it is, and the last try
+    link: u32,
+    tried: Instant,
+    ticked: Instant,
+    files: u64,
+    trees: (Instant, u64),
+}
+
+impl Wakes {
+    fn start() -> Wakes {
+        let (tx, rx) = mpsc::channel();
+        let keys = tx.clone();
+        thread::spawn(move || while let Ok(e) = event::read() {
+            let wake = match e {
+                Event::Resize(..) => Wake::Resize,
+                e => match input(e) {
+                    Some(i) => Wake::Input(i),
+                    None => continue,
+                },
+            };
+            if keys.send(wake).is_err() {
+                break;
+            }
+        });
+        let mut w = Wakes { tx, rx, later: VecDeque::new(), link: 0, tried: Instant::now(), ticked: Instant::now(), files: 0, trees: (Instant::now(), 0) };
+        w.connect();
+        w.changed();
+        w
+    }
+
+    fn connect(&mut self) {
+        self.link += 1;
+        let (tx, link) = (self.tx.clone(), self.link);
+        self.tried = Instant::now();
+        control::connect(move |n| {
+            tx.send(match n {
+                News::Changed => Wake::Tmux,
+                News::Focus => Wake::Focus,
+                News::Closed => Wake::Closed(link),
+            }).ok();
+        });
+    }
+
+    /// What happened, or None after a second without news. Several news of tmux count as one.
+    fn next(&mut self) -> Option<Wake> {
+        let first = match self.later.pop_front() {
+            Some(w) => w,
+            None => self.rx.recv_timeout(Duration::from_secs(1)).ok()?,
+        };
+        if matches!(first, Wake::Closed(n) if n == self.link) {
+            control::close();
+        }
+        if matches!(first, Wake::Tmux) {
+            self.later.extend(self.rx.try_iter().filter(|w| !matches!(w, Wake::Tmux)));
+        }
+        Some(first)
+    }
+
+    /// Once a second at most.
+    fn tick(&mut self) -> bool {
+        let due = self.ticked.elapsed().as_millis() >= 950;
+        if due {
+            self.ticked = Instant::now();
+            if !control::connected() && self.tried.elapsed().as_secs() >= 5 {
+                self.connect();
+            }
+        }
+        due
+    }
+
+    /// Whether a state file changed, or the branch or the folder of a worktree (looked at less often).
+    fn changed(&mut self) -> bool {
+        let mut h = DefaultHasher::new();
+        for f in ["worktrees.tsv", "repos", "folded", "lang", "icons"] {
+            fs::metadata(state_dir().join(f)).and_then(|m| m.modified()).ok().hash(&mut h);
+        }
+        fs::metadata(prs::cache_file()).and_then(|m| m.modified()).ok().hash(&mut h);
+        let files = h.finish();
+        let mut trees = self.trees.1;
+        if self.trees.0.elapsed().as_secs() >= 5 || trees == 0 {
+            let mut h = DefaultHasher::new();
+            load().iter().for_each(|w| (w.gone(), w.branch()).hash(&mut h));
+            trees = h.finish();
+            self.trees = (Instant::now(), self.trees.1);
+        }
+        let new = (files, trees) != (self.files, self.trees.1);
+        (self.files, self.trees.1) = (files, trees);
+        new
+    }
+}
+
 enum Row {
     /// where some repos are, its name and how many they are
     Folder(PathBuf, String, usize),
@@ -149,13 +257,37 @@ enum Row {
     Wt(Wt, Vec<bool>),
 }
 
+/// What is known of a terminal's screen. Times are of the clock, as those of tmux and of the marks.
+#[derive(Default)]
+struct Seen {
+    visible: bool,
+    /// since when it is visible, or hidden
+    since: u64,
+    hash: Option<u64>,
+    /// last time that it changed while visible
+    moved: Option<u64>,
+    /// last activity while hidden
+    activity: u64,
+    /// the mark whose dialog was seen on screen
+    dialog: u64,
+}
+
+/// Whether a person has the session open, for the thread that fetches PRs.
+static WATCHED: AtomicBool = AtomicBool::new(true);
+
 struct App {
     rows: Vec<Row>,
     sel: usize,
     /// last-resort error line, for when not even a popup can be opened
     msg: String,
-    /// pane -> (hash of its screen, last time it changed)
-    seen: HashMap<String, (u64, Option<Instant>)>,
+    /// what is known of each terminal's screen
+    seen: HashMap<String, Seen>,
+    /// the last mark of each terminal that was told to the person
+    told: HashMap<String, u64>,
+    started: bool,
+    /// to notice that the clock jumped or the computer slept
+    clock: (Instant, u64),
+    wts: Vec<Wt>,
     /// worktree id -> its tabs, for those that have a terminal
     live: HashMap<String, Vec<Pane>>,
     prs: Cache,
@@ -173,7 +305,8 @@ struct App {
 
 impl App {
     fn refresh(&mut self) {
-        let wts = load();
+        self.wts = load();
+        let wts = self.wts.clone();
         let key = |r: &Row| match r {
             Row::Folder(p, ..) | Row::Repo(p, _) => p.to_string_lossy().to_string(),
             Row::Wt(w, _) => w.id(),
@@ -197,33 +330,71 @@ impl App {
         }
         self.sel = self.sel.min(self.rows.len().saturating_sub(1));
         self.live.clear();
-        let watched = terminal_pane().map(|p| p.0).filter(|_| {
-            tmux(&["display-message", "-p", "-t", &format!("{UI}:"), "#{session_attached}"]).is_ok_and(|n| n != "0")
-        });
+        let front = terminal_pane().map(|p| p.0);
+        let watched = viewer().is_some();
+        WATCHED.store(watched, Ordering::Relaxed);
+        self.active = active();
+        let now = prs::now();
+        let jumped = now.saturating_sub(self.clock.1) > self.clock.0.elapsed().as_secs() + 5;
+        self.clock = (Instant::now(), now);
+        let mode = work::notify_mode();
         for mut p in panes() {
             if p.wt == SIDEBAR || p.wt == RAIL {
                 continue;
             }
-            let text = tmux(&["capture-pane", "-p", "-t", &p.pane]).unwrap_or_default();
-            let mut h = DefaultHasher::new();
-            text.hash(&mut h);
-            let h = h.finish();
-            let e = self.seen.entry(p.pane.clone()).or_insert((h, None));
-            if e.0 != h {
-                *e = (h, Some(Instant::now()));
+            let visible = front.as_ref() == Some(&p.pane);
+            agent::follow(&mut p);
+            let exact = p.mark.split(' ').nth(2).is_some();
+            let s = self.seen.entry(p.pane.clone()).or_insert_with(|| Seen { visible, ..Seen::default() });
+            if jumped {
+                (s.since, s.moved) = (now, s.moved.map(|_| now));
             }
-            let screen = Screen { still: e.1.map(|t| t.elapsed().as_secs()), text, visible: watched.as_ref() == Some(&p.pane) };
-            let (busy, new) = agent::settle(p.agent, &screen, prs::now());
+            if s.visible != visible {
+                // a hidden terminal tells by its window, and it has just got one with a past of its own
+                *s = Seen { visible, since: now, moved: visible.then_some(s.activity), dialog: s.dialog, ..Seen::default() };
+            }
+            if !visible {
+                s.activity = p.activity;
+            }
+            let asks = p.agent.filter(|a| a.0.waits());
+            let working = p.agent.is_some_and(|a| a.0 == Agent::Working);
+            let quiet = |at: u64| now.saturating_sub(at);
+            // how long a hidden one has been still; the visible one is captured, if its agent does not tell what it needs
+            let hidden = quiet(if working { p.activity.max(s.since) } else { p.activity });
+            let moved = !visible && asks.is_some_and(|(_, at)| hidden + 2 < quiet(at));
+            let unseen = asks.is_some_and(|(_, at)| s.dialog != at);
+            let look = !exact && if visible { p.agent.is_none() || working || asks.is_some() } else { moved || unseen };
+            let text = look.then(|| tmux(&["capture-pane", "-p", "-t", &p.pane]).ok()).flatten();
+            if visible && let Some(text) = &text {
+                let mut h = DefaultHasher::new();
+                text.hash(&mut h);
+                let h = Some(h.finish());
+                if s.hash.is_some() && s.hash != h {
+                    s.moved = Some(now);
+                }
+                s.hash = h;
+            }
+            if let (Some((_, at)), Some(text)) = (asks, &text) && text.contains(agent::DIALOG) {
+                s.dialog = at;
+            }
+            let still = if visible { s.moved.map(quiet) } else { Some(hidden) };
+            let dialog = asks.is_some_and(|(_, at)| s.dialog == at);
+            let (busy, new) = agent::settle(p.agent, exact, &Screen { still, text, dialog, visible: visible && watched }, now);
             p.busy = busy;
-            if let (Some(was), Some(new)) = (p.agent, new) {
-                agent::replace(&p.pane, was, new);
-                p.agent = Some((new, prs::now()));
+            if let (Some(_), Some(new)) = (p.agent, new) {
+                agent::replace(&p, new);
+                p.agent = Some((new, now));
             }
             if self.busy.insert(p.pane.clone(), p.busy) != Some(p.busy) {
                 set_busy(&p.pane, p.busy);
             }
+            // told once, and only if it is not in front of the person; those that were there at the start are known
+            if let Some((a, at)) = p.agent && self.told.insert(p.pane.clone(), at) != Some(at) && self.started && !(visible && watched) && work::worth(a, &mode) {
+                work::notify(&p.wt, a.text());
+            }
             self.live.entry(p.wt.clone()).or_default().push(p);
         }
+        self.started = true;
         self.heal(&wts);
         let bar = tab_bar();
         if self.bar != bar {
@@ -260,6 +431,12 @@ impl App {
 
     fn waits(&self, id: &str) -> bool {
         self.foremost(id).is_some_and(|p| p.look() == State::Asking)
+    }
+
+    /// Something that will change by itself: an agent that stops, or a terminal that is missing.
+    fn pending(&self) -> bool {
+        let asked = |p: &Pane| p.agent.is_some_and(|a| a.0.waits()) && self.seen.get(&p.pane).is_some_and(|s| s.visible);
+        self.missing || self.live.values().flatten().any(|p| p.busy || asked(p))
     }
 
     fn update_status(&mut self, wts: &[Wt]) {
@@ -317,7 +494,7 @@ impl App {
             out.push(fg(format!(" ◆ {yours}"), SIGNAL));
         }
         if folded {
-            let ids: Vec<String> = load().iter().filter(|w| within(&w.repo)).map(Wt::id).collect();
+            let ids: Vec<String> = self.wts.iter().filter(|w| within(&w.repo)).map(Wt::id).collect();
             let waiting = ids.iter().filter(|id| self.waits(id)).count();
             if waiting > 0 {
                 out.insert(0, fg(format!(" {}", (tr().agents_short)(waiting)), SIGNAL));
@@ -336,7 +513,7 @@ impl App {
         let id = w.id();
         let tabs = self.live.get(&id).map_or(0, Vec::len);
         let pr = self.prs.prs.iter().find(|p| p.is_of(w)).map(|p| (p.number.clone(), p.status()));
-        let gone = !w.path().exists();
+        let gone = w.gone();
         let mut right = vec![fg(times(tabs), MUTED), " ".into()];
         if let Some((_, (group, s, _))) = &pr && (*group != Group::Going || *s == State::Failed) {
             right.push(fg(format!("{} ", look(*s).0), look(*s).1));
@@ -452,7 +629,11 @@ fn poll_input(ms: u64) -> Option<Input> {
     if !event::poll(Duration::from_millis(ms)).unwrap_or(false) {
         return None;
     }
-    match event::read().ok()? {
+    input(event::read().ok()?)
+}
+
+fn input(e: Event) -> Option<Input> {
+    match e {
         Event::Key(k) if k.kind == KeyEventKind::Press => {
             Some(Input::Key(if k.modifiers.contains(KeyModifiers::CONTROL) { KeyCode::Esc } else { k.code }))
         }
@@ -466,59 +647,73 @@ fn poll_input(ms: u64) -> Option<Input> {
     }
 }
 
-fn poll_key() -> Option<KeyCode> {
-    match poll_input(300)? {
-        Input::Key(k) => Some(k),
-        _ => None,
-    }
-}
-
 pub fn run() -> Res<()> {
+    let mut term = ratatui::init();
+    let mut wakes = Wakes::start();
     style_ui().ok();
     thread::spawn(|| loop {
+        let last = Instant::now();
         prs::refresh().ok(); // errors go into the cache, the rail shows them
-        thread::sleep(Duration::from_secs(60));
+        // nobody looks: less often
+        while last.elapsed().as_secs() < if WATCHED.load(Ordering::Relaxed) { 60 } else { 600 } {
+            thread::sleep(Duration::from_secs(5));
+        }
     });
-    let mut term = ratatui::init();
     let mut app = App {
-        rows: vec![], sel: 1, msg: String::new(), seen: HashMap::new(), live: HashMap::new(),
+        rows: vec![], sel: 1, msg: String::new(), seen: HashMap::new(), told: HashMap::new(), started: false, clock: (Instant::now(), prs::now()), live: HashMap::new(),
         prs: Cache::default(), active: true, status: Default::default(), busy: HashMap::new(),
-        visible: String::new(), missing: false, bar: String::new(),    };
+        visible: String::new(), missing: false, bar: String::new(), wts: vec![],
+    };
     let (mut last, binary) = (Instant::now(), Binary::now());
     app.refresh();
+    let mut draw = true;
     let res = loop {
-        if last.elapsed().as_millis() >= 1000 && binary.replaced() {
+        if draw && let Err(e) = term.draw(|f| app.draw(f)) {
+            break Err(e.to_string());
+        }
+        let wake = wakes.next();
+        if wakes.tick() && binary.replaced() {
             ratatui::restore();
             break Err(restart_self());
         }
-        if last.elapsed().as_millis() >= 1000 {
-            app.refresh();
-            last = Instant::now();
-        }
-        app.active = active();
-        if let Err(e) = term.draw(|f| app.draw(f)) {
-            break Err(e.to_string());
-        }
-        let Some(k) = poll_key() else { continue };
+        let k = match wake {
+            Some(Wake::Input(Input::Key(k))) => k,
+            Some(Wake::Focus) => {
+                let on = active();
+                draw = app.active != on;
+                app.active = on;
+                continue;
+            }
+            w => {
+                // half a minute: what tells how long ago something was
+                draw = matches!(w, Some(Wake::Tmux | Wake::Resize)) || wakes.changed() || app.pending() || !control::connected() || last.elapsed().as_secs() >= 30;
+                if draw {
+                    app.refresh();
+                    last = Instant::now();
+                }
+                continue;
+            }
+        };
+        draw = true;
         app.msg.clear();
         match k {
-            KeyCode::Char('q') => { tmux(&["detach-client"]).ok(); }
+            KeyCode::Char('q') => { detach().ok(); }
             KeyCode::Char('j') | KeyCode::Down => app.sel = (app.sel + 1).min(app.rows.len().saturating_sub(1)),
             KeyCode::Char('k') | KeyCode::Up => app.sel = app.sel.saturating_sub(1),
             KeyCode::Char('?') => app.popup(tr().title_commands, (136, 34), &["commands"]),
             KeyCode::Char('p') => if let Err(e) = toggle_rail() {
                 app.error(&e);
             },
+            KeyCode::Char('r') => { work::next().ok(); } // nobody waits: stay
             KeyCode::Tab => { focus(RAIL).ok(); }
             KeyCode::Char('N') => if let Some(Row::Wt(w, _)) = app.selected() {
                 let id = w.id();
                 app.popup(tr().title_child, DIALOG, &["dialog", "child", &id]);
             },
-            KeyCode::Char('t') => if let Some(Row::Wt(w, _)) = app.selected() {
-                if let Err(e) = open_tab(&w.clone()) {
+            KeyCode::Char('t') => if let Some(Row::Wt(w, _)) = app.selected()
+                && let Err(e) = open_tab(&w.clone()) {
                     app.error(&e);
-                }
-            },
+                },
             KeyCode::Char('h') | KeyCode::Left => { step_tab(false).ok(); }
             KeyCode::Char('l') | KeyCode::Right => { step_tab(true).ok(); }
             KeyCode::Char('n') => match app.repo_of_selected() {
@@ -556,6 +751,9 @@ pub fn run() -> Res<()> {
                 _ => {}
             },
             _ => {}
+        }
+        if !matches!(k, KeyCode::Char('j' | 'k') | KeyCode::Down | KeyCode::Up) {
+            app.refresh();
         }
     };
     ratatui::restore();
@@ -709,15 +907,40 @@ fn draw_rail(f: &mut Frame, c: &Cache, wts: &[Wt], sel: usize, active: bool, bus
     rows.into_iter().zip(which).filter_map(|((a, b), i)| Some((a, b, i?))).collect()
 }
 
+/// Keys typed in the placeholder are for the sidebar.
+fn pass_on(k: KeyCode) {
+    let Some(side) = ui_pane(SIDEBAR) else { return };
+    focus(SIDEBAR).ok();
+    match k {
+        KeyCode::Char(c) => tmux(&["send-keys", "-l", "-t", &side, "--", &c.to_string()]).ok(),
+        KeyCode::Enter => tmux(&["send-keys", "-t", &side, "Enter"]).ok(),
+        KeyCode::Up => tmux(&["send-keys", "-t", &side, "Up"]).ok(),
+        KeyCode::Down => tmux(&["send-keys", "-t", &side, "Down"]).ok(),
+        _ => None,
+    };
+}
+
 /// What is shown when no worktree is: the logo and what to do next. Keys go to the sidebar.
 pub fn welcome() -> Res<()> {
     let mut term = ratatui::init();
-    let binary = Binary::now();
+    let (mut wakes, binary, mut draw) = (Wakes::start(), Binary::now(), true);
     let res = loop {
-        if binary.replaced() {
+        if wakes.tick() && binary.replaced() {
             ratatui::restore();
             break Err(restart_self());
         }
+        if !draw {
+            draw = match wakes.next() {
+                Some(Wake::Input(Input::Key(k))) => {
+                    pass_on(k);
+                    false
+                }
+                Some(Wake::Tmux | Wake::Resize) => true,
+                _ => !control::connected(),
+            };
+            continue;
+        }
+        draw = false;
         let (all, wts) = (panes(), load());
         let waits = |w: &&Wt| foremost(all.iter().filter(|p| p.wt == w.id())).is_some_and(|p| p.look() == State::Asking);
         let waiting = wts.iter().filter(waits).count();
@@ -740,33 +963,47 @@ pub fn welcome() -> Res<()> {
         if let Err(e) = drawn {
             break Err(e.to_string());
         }
-        let Some(Input::Key(k)) = poll_input(1000) else { continue };
-        let Some(side) = ui_pane(SIDEBAR) else { continue };
-        focus(SIDEBAR).ok();
-        match k {
-            KeyCode::Char(c) => tmux(&["send-keys", "-l", "-t", &side, "--", &c.to_string()]).ok(),
-            KeyCode::Enter => tmux(&["send-keys", "-t", &side, "Enter"]).ok(),
-            KeyCode::Up => tmux(&["send-keys", "-t", &side, "Up"]).ok(),
-            KeyCode::Down => tmux(&["send-keys", "-t", &side, "Down"]).ok(),
-            _ => None,
-        };
     };
     ratatui::restore();
     res
+}
+
+/// Waits until the rail has something to do: a key, or None to draw again.
+fn rail_input(wakes: &mut Wakes, binary: &Binary, focused: &mut bool, busy: bool) -> Option<Input> {
+    let since = Instant::now();
+    loop {
+        match wakes.next() {
+            Some(Wake::Input(i)) => return Some(i),
+            Some(Wake::Focus) => {
+                let was = std::mem::replace(focused, active());
+                if was != *focused {
+                    return None;
+                }
+            }
+            Some(Wake::Resize) => return None,
+            _ => {}
+        }
+        // the age of the PRs is told in steps of ten seconds
+        if wakes.tick() && (busy || wakes.changed() || binary.replaced() || since.elapsed().as_secs() >= 10) {
+            *focused = active();
+            return None;
+        }
+    }
 }
 
 pub fn rail() -> Res<()> {
     let mut term = ratatui::init();
     execute!(stdout(), event::EnableMouseCapture).ok();
     let (mut sel, mut msg, mut busy) = (0usize, String::new(), None::<thread::JoinHandle<()>>);
-    let binary = Binary::now();
+    let (mut wakes, binary) = (Wakes::start(), Binary::now());
+    let mut focused = active();
     let res = loop {
         if binary.replaced() {
             execute!(stdout(), event::DisableMouseCapture).ok();
             ratatui::restore();
             break Err(restart_self());
         }
-        let (c, wts, focused) = (prs::cached(), load(), active());
+        let (c, wts) = (prs::cached(), load());
         sel = sel.min(c.prs.len().saturating_sub(1));
         if busy.as_ref().is_some_and(|b| b.is_finished()) {
             busy = None;
@@ -776,7 +1013,7 @@ pub fn rail() -> Res<()> {
             break Err(e.to_string());
         }
         let view = |p: &Pr| popup(&format!("#{} {}", p.number, p.repo_name()), (100, 34), &["dialog", "view", &p.url]);
-        let k = match poll_input(300) {
+        let k = match rail_input(&mut wakes, &binary, &mut focused, busy.is_some()) {
             None => continue,
             Some(Input::Key(k)) => k,
             Some(Input::Wheel { down }) => if down { KeyCode::Down } else { KeyCode::Up },
@@ -791,7 +1028,7 @@ pub fn rail() -> Res<()> {
         msg.clear();
         let pr = c.prs.get(sel);
         let done = match (k, pr) {
-            (KeyCode::Char('q'), _) => tmux(&["detach-client"]).map(|_| ()),
+            (KeyCode::Char('q'), _) => detach(),
             (KeyCode::Char('j') | KeyCode::Down, _) => { sel += 1; Ok(()) }
             (KeyCode::Char('k') | KeyCode::Up, _) => { sel = sel.saturating_sub(1); Ok(()) }
             (KeyCode::Tab, _) => focus(SIDEBAR),
@@ -831,7 +1068,7 @@ fn wrap(s: &str, w: usize) -> Vec<String> {
         }
         while Span::raw(word).width() > w.max(1) {
             let (i, _) = word.char_indices().nth(w.max(1) / 2).unwrap_or((word.len(), ' ')); // half: wide characters fit too
-            let cut = word.char_indices().map(|c| c.0).filter(|c| Span::raw(&word[..*c]).width() <= w).last().filter(|c| *c > 0).unwrap_or(i.max(1));
+            let cut = word.char_indices().map(|c| c.0).rfind(|c| Span::raw(&word[..*c]).width() <= w).filter(|c| *c > 0).unwrap_or(i.max(1));
             out.push(std::mem::take(&mut line) + &word[..cut]);
             word = &word[cut..];
         }
@@ -1254,7 +1491,7 @@ pub fn commands() -> Res<()> {
                 // typed letter by letter, then left to read
                 let text = tr().orc[tick / 60 % tr().orc.len()];
                 let typed: String = text.chars().take(tick % 60).collect();
-                let cursor = if tick / 4 % 2 == 0 { "▏" } else { " " };
+                let cursor = if (tick / 4).is_multiple_of(2) { "▏" } else { " " };
                 art.extend([Line::default(), Line::from(vec![fg("> ", MUTED), fg(typed, FOAM), fg(cursor, FOAM)])]);
                 f.render_widget(Paragraph::new(art), side.inner(Margin::new(1, 1)));
             }
@@ -1575,7 +1812,7 @@ mod tests {
         // both are drawn on the row of a worktree
         let pr = [State::Failed, State::Waiting, State::Done].map(|s| look(s).0);
         for a in [Agent::Question, Agent::Permission, Agent::Failed, Agent::Done] {
-            let p = Pane { pane: "%1".into(), wt: "r/w".into(), tab: 1, on: true, busy: false, cmd: "claude".into(), agent: Some((a, 0)) };
+            let p = Pane { pane: "%1".into(), wt: "r/w".into(), tab: 1, on: true, busy: false, cmd: "claude".into(), agent: Some((a, 0)), mark: String::new(), title: String::new(), shell: false, activity: 0 };
             assert!(!pr.contains(&look(p.look()).0), "{a:?}");
         }
     }

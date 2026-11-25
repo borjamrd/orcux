@@ -5,7 +5,7 @@ use ratatui::prelude::*;
 
 /// `t` hundredths of the way from one color to the other.
 pub fn mix(from: u32, to: u32, t: u32) -> u32 {
-    [16, 8, 0].into_iter().fold(0, |c, s| c << 8 | ((from >> s & 255) * (100 - t) + (to >> s & 255) * t) / 100)
+    [16, 8, 0].into_iter().fold(0, |c, s| (c << 8) | (((from >> s & 255) * (100 - t) + (to >> s & 255) * t) / 100))
 }
 
 /// `ink` hundredths of text over the ground.

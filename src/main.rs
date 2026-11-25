@@ -1,4 +1,6 @@
 mod agent;
+mod control;
+mod doctor;
 mod i18n;
 mod mark;
 mod orc;
@@ -6,8 +8,9 @@ mod pixels;
 mod prs;
 mod theme;
 mod tui;
+mod work;
 
-use std::{env, fs, path::{Path, PathBuf}, process::Command, thread, time::Duration};
+use std::{collections::BTreeMap, env, fs, path::{Path, PathBuf}, process::Command, thread, time::Duration};
 
 use agent::Agent;
 use i18n::tr;
@@ -20,6 +23,8 @@ const UI_NAME: &str = "orcux";
 const BG: &str = "orcux-bg"; // hidden session: one window per worktree terminal
 /// Claude Code loads the plugins in these folders, for that terminal only.
 const PLUGINS: &str = "CLAUDE_CODE_PLUGIN_DIRS";
+/// OpenCode adds this to its configuration.
+const OPENCODE: &str = "OPENCODE_CONFIG_CONTENT";
 pub const SIDEBAR: &str = "__sidebar";
 pub const RAIL: &str = "__prs"; // right pane: pull requests
 /// Opt+w: what macOS types for it on the Spanish and US layouts, and what terminals with Option as Meta send.
@@ -63,19 +68,47 @@ impl Wt {
         home().join("orcux").join(self.repo_name()).join(&self.name)
     }
     /// The branch it has checked out now (an imported one is not named after it). Read from git's files: this
-    /// runs for every worktree on every redraw.
+    /// runs for every worktree on every redraw. Read again after a few seconds.
     pub fn branch(&self) -> Option<String> {
+        self.seen().1
+    }
+    /// Its folder is not there.
+    pub fn gone(&self) -> bool {
+        self.seen().0
+    }
+    fn seen(&self) -> (bool, Option<String>) {
+        type Seen = (std::time::Instant, (bool, Option<String>));
+        static SEEN: std::sync::Mutex<BTreeMap<PathBuf, Seen>> = std::sync::Mutex::new(BTreeMap::new());
+        let path = self.path();
+        let Ok(mut all) = SEEN.lock() else { return (!path.exists(), self.read_branch()) };
+        match all.get(&path) {
+            Some((at, what)) if at.elapsed().as_secs() < 4 => what.clone(),
+            _ => {
+                let what = (!path.exists(), self.read_branch());
+                all.insert(path, (std::time::Instant::now(), what.clone()));
+                what
+            }
+        }
+    }
+    fn read_branch(&self) -> Option<String> {
         let link = fs::read_to_string(self.path().join(".git")).ok()?;
         let dir = self.path().join(link.strip_prefix("gitdir:")?.trim());
         let head = fs::read_to_string(dir.join("HEAD")).ok()?;
         Some(head.trim().strip_prefix("ref: refs/heads/")?.into())
     }
+    /// The same worktree, whatever else changed.
+    pub fn is(&self, other: &Wt) -> bool {
+        self.repo == other.repo && self.name == other.name
+    }
     pub fn port(&self) -> u32 {
         10000 + self.slot * 100
     }
     fn env(&self) -> Vec<String> {
-        let compose: String = self.id().to_lowercase().chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+        let plain = |w: &Wt| w.id().to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect::<String>();
+        let mut compose = plain(self);
+        if load().iter().any(|w| !w.is(self) && w.slot < self.slot && plain(w) == compose) {
+            compose += &format!("-{}", self.slot); // "a/b-c" and "a-b/c"
+        }
         let mut all = vec![
             format!("ORCUX_ID={}", self.id()),
             format!("ORCUX_PORT={}", self.port()),
@@ -86,6 +119,10 @@ impl Wt {
             let (dir, others) = (dir.display().to_string(), env::var(PLUGINS).unwrap_or_default());
             let others: Vec<&str> = others.split(':').filter(|d| !d.is_empty() && *d != dir).collect();
             all.push(format!("{PLUGINS}={}", others.into_iter().chain([dir.as_str()]).collect::<Vec<_>>().join(":")));
+        }
+        // one of the user's own stays
+        if env::var(OPENCODE).is_err() && let Some(config) = agent::opencode() {
+            all.push(format!("{OPENCODE}={config}"));
         }
         all
     }
@@ -116,7 +153,29 @@ fn run(cmd: &str, args: &[&str], cwd: Option<&Path>) -> Res<String> {
 }
 
 pub fn tmux(args: &[&str]) -> Res<String> {
-    run("tmux", args, None)
+    control::command(args).unwrap_or_else(|| {
+        // as arguments of a process, a last ";" would separate commands
+        let args: Vec<String> = args.iter().map(|a| a.strip_suffix(';').map_or(a.to_string(), |a| format!("{a}\\;"))).collect();
+        run("tmux", &args.iter().map(String::as_str).collect::<Vec<_>>(), None)
+    })
+}
+
+/// The client of the person, with its size: the connections of `control` are clients too.
+pub fn viewer() -> Option<(String, u32, u32)> {
+    let f = "#{client_control_mode}\t#{client_activity}\t#{client_name}\t#{client_width}\t#{client_height}";
+    let all = tmux(&["list-clients", "-t", UI, "-F", f]).ok()?;
+    let people = all.lines().filter_map(|l| {
+        let [control, at, name, w, h] = l.split('\t').collect::<Vec<_>>()[..] else { return None };
+        (control != "1").then(|| Some((at.parse::<u64>().ok()?, name.to_string(), w.parse().ok()?, h.parse().ok()?)))?
+    });
+    people.max_by_key(|c| c.0).map(|(_, name, w, h)| (name, w, h))
+}
+
+pub fn detach() -> Res<()> {
+    match viewer() {
+        Some((name, ..)) => tmux(&["detach-client", "-t", &name]).map(|_| ()),
+        None => Ok(()),
+    }
 }
 
 pub fn git(dir: &Path, args: &[&str]) -> Res<String> {
@@ -124,6 +183,54 @@ pub fn git(dir: &Path, args: &[&str]) -> Res<String> {
 }
 
 // ---------- state: two plain files, no db ----------
+
+/// Held while state files or the layout of tmux change: several agents may run orcux at once. Never while git works.
+/// The same thread can take it again.
+pub struct Lock(Option<fs::File>);
+
+thread_local!(static HELD: std::cell::Cell<u32> = const { std::cell::Cell::new(0) });
+
+pub fn lock() -> Lock {
+    let first = HELD.get() == 0;
+    HELD.set(HELD.get() + 1);
+    let take = || {
+        let f = fs::File::create(state_dir().join("lock")).ok()?;
+        f.lock().ok()?;
+        Some(f)
+    };
+    Lock(if first { take() } else { None })
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        HELD.set(HELD.get() - 1);
+        drop(self.0.take());
+    }
+}
+
+/// What cannot be read is not the same as empty: it would be saved as such.
+fn read_state(name: &str) -> Res<String> {
+    match fs::read_to_string(state_dir().join(name)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("{name}: {e}")),
+        r => Ok(r.unwrap_or_default()),
+    }
+}
+
+/// Whole or not at all: others may be reading it.
+fn write_state(name: &str, text: &str) -> Res<()> {
+    let tmp = state_dir().join(format!("{name}.{}", std::process::id()));
+    fs::write(&tmp, text).and_then(|_| fs::rename(&tmp, state_dir().join(name))).map_err(|e| format!("{name}: {e}"))
+}
+
+/// Changes the list of worktrees as it is now.
+fn change<T>(f: impl FnOnce(&mut Vec<Wt>) -> Res<T>) -> Res<T> {
+    let _lock = lock();
+    read_state("worktrees.tsv")?;
+    let mut wts = load();
+    let out = f(&mut wts)?;
+    save(&wts)?;
+    Ok(out)
+}
 
 pub fn load() -> Vec<Wt> {
     fs::read_to_string(state_dir().join("worktrees.tsv")).unwrap_or_default().lines()
@@ -139,7 +246,7 @@ fn save(wts: &[Wt]) -> Res<()> {
     let at = |w: &Wt| w.at.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
     let line = |w: &Wt| format!("{}\t{}\t{}\t{}\t{}\n", w.repo.display(), w.name, w.slot, at(w), w.parent.as_deref().unwrap_or(""));
     let s: String = wts.iter().map(line).collect();
-    fs::write(state_dir().join("worktrees.tsv"), s).map_err(|e| e.to_string())
+    write_state("worktrees.tsv", &s)
 }
 
 /// The worktrees of a repo as a tree, parents before their children. With each one, whether it is the last of its
@@ -174,6 +281,8 @@ pub fn repos() -> Vec<PathBuf> {
 fn add_repo(p: &Path) -> Res<PathBuf> {
     let common = git(p, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
     let main = Path::new(&common).parent().ok_or(tr().not_repo)?.to_path_buf();
+    let _lock = lock();
+    read_state("repos")?;
     let mut r = repos();
     if !r.contains(&main) {
         r.push(main.clone());
@@ -184,11 +293,13 @@ fn add_repo(p: &Path) -> Res<PathBuf> {
 
 fn save_repos(r: &[PathBuf]) -> Res<()> {
     let s: String = r.iter().map(|p| format!("{}\n", p.display())).collect();
-    fs::write(state_dir().join("repos"), s).map_err(|e| e.to_string())
+    write_state("repos", &s)
 }
 
 /// Takes a repo off the sidebar; nothing is deleted. Its worktrees must have left before.
 pub fn remove_repo(repo: &Path) -> Res<()> {
+    let _lock = lock();
+    read_state("repos")?;
     match load().iter().filter(|w| w.repo == repo).count() {
         0 => save_repos(&repos().into_iter().filter(|r| r != repo).collect::<Vec<_>>()),
         n => Err((tr().repo_has_wts)(n)),
@@ -296,36 +407,48 @@ pub fn create(repo: &Path, name: &str, cmd: Option<&str>) -> Res<Wt> {
 /// With a parent, the new branch starts at the parent's last commit instead of origin/HEAD.
 pub fn create_from(repo: &Path, name: &str, cmd: Option<&str>, parent: Option<&Wt>) -> Res<Wt> {
     let repo = add_repo(repo)?;
-    let mut wts = load();
-    if wts.iter().any(|w| w.repo == repo && w.name == name) {
-        return Err((tr().exists)(name));
+    // registered before git works, so that no other process takes its name or its ports
+    let wt = change(|wts| {
+        let wt = Wt { repo: repo.clone(), name: name.into(), slot: free_slot(wts), at: None, parent: parent.map(|p| p.name.clone()) };
+        match wts.iter().find(|w| w.id() == wt.id()) {
+            Some(w) if w.repo == repo => return Err((tr().exists)(name)),
+            Some(w) => return Err((tr().id_taken)(&w.id())),
+            None => wts.push(wt.clone()),
+        }
+        Ok(wt)
+    })?;
+    if let Err(e) = check_out(&wt, parent) {
+        change(|wts| {
+            wts.retain(|w| !w.is(&wt));
+            Ok(())
+        })?;
+        return Err(e);
     }
-    let slot = free_slot(&wts);
-    let wt = Wt { repo: repo.clone(), name: name.into(), slot, at: None, parent: parent.map(|p| p.name.clone()) };
-    let path = wt.path();
+    let pane = spawn(&wt)?;
+    if let Some(c) = cmd {
+        type_into(&pane, c)?;
+    }
+    Ok(wt)
+}
+
+fn check_out(wt: &Wt, parent: Option<&Wt>) -> Res<()> {
+    let (repo, name, path) = (&wt.repo, wt.name.as_str(), wt.path());
     let p = path.to_str().ok_or(tr().non_utf8)?;
-    let has = |r: &str| git(&repo, &["rev-parse", "--verify", "--quiet", r]).is_ok();
+    let has = |r: &str| git(repo, &["rev-parse", "--verify", "--quiet", r]).is_ok();
     let exists = has(&format!("refs/heads/{name}")) || has(&format!("refs/remotes/origin/{name}"));
     if let Some(parent) = parent {
         if exists {
             return Err((tr().branch_exists)(name));
         }
         let base = git(&parent.path(), &["rev-parse", "HEAD"])?;
-        git(&repo, &["worktree", "add", "--no-track", "-b", name, p, &base])?;
+        git(repo, &["worktree", "add", "--no-track", "-b", name, p, &base])?;
     } else if exists {
-        git(&repo, &["worktree", "add", p, name])?;
+        git(repo, &["worktree", "add", p, name])?;
     } else {
         let base = if has("refs/remotes/origin/HEAD") { "origin/HEAD" } else { "HEAD" };
-        git(&repo, &["worktree", "add", "--no-track", "-b", name, p, base])?;
+        git(repo, &["worktree", "add", "--no-track", "-b", name, p, base])?;
     }
-    copy_includes(&repo, &path)?;
-    wts.push(wt.clone());
-    save(&wts)?;
-    let pane = spawn(&wt)?;
-    if let Some(c) = cmd {
-        type_into(&pane, c)?;
-    }
-    Ok(wt)
+    copy_includes(repo, &path)
 }
 
 /// Copies the local-only files listed in the main checkout's .worktreeinclude.
@@ -371,26 +494,29 @@ fn importable(p: &Path, wts: &[Wt]) -> Res<Wt> {
 
 /// Registers existing worktrees without moving or changing them; without `yes`, only lists what it would do.
 fn import(paths: &[&str], yes: bool) -> Res<()> {
-    let mut wts = load();
     let mut n = 0;
-    for p in paths {
-        match importable(Path::new(p), &wts) {
-            Ok(mut w) => {
-                w.slot = free_slot(&wts);
-                println!("+ {:<50} :{:<6} {}", w.id(), w.port(), w.branch().unwrap_or_default());
-                if yes {
-                    add_repo(&w.repo)?;
+    let mut list = |wts: &mut Vec<Wt>| {
+        for p in paths {
+            match importable(Path::new(p), wts) {
+                Ok(mut w) => {
+                    w.slot = free_slot(wts);
+                    println!("+ {:<50} :{:<6} {}", w.id(), w.port(), w.branch().unwrap_or_default());
+                    if yes {
+                        add_repo(&w.repo)?;
+                    }
+                    wts.push(w);
+                    n += 1;
                 }
-                wts.push(w);
-                n += 1;
+                Err(e) => println!("- {p}: {e}"),
             }
-            Err(e) => println!("- {p}: {e}"),
         }
-    }
+        Ok(())
+    };
     if yes {
-        save(&wts)?;
+        change(list)?;
         println!("{}", (tr().imported)(n));
     } else {
+        list(&mut load())?;
         println!("{}", (tr().to_import)(n));
     }
     Ok(())
@@ -398,23 +524,37 @@ fn import(paths: &[&str], yes: bool) -> Res<()> {
 
 pub fn remove(w: &Wt, force: bool) -> Res<()> {
     let path = w.path();
-    if w.at.is_some() {
-        // imported: not ours to delete, not even with --force
+    if w.at.is_some() || !w.repo.exists() {
+        // imported, or of a repo that is not there any more: not ours to delete, not even with --force
     } else if path.exists() {
-        let p = path.to_str().unwrap();
+        let p = path.to_str().ok_or(tr().non_utf8)?;
+        // git would delete it with everything inside, also another worktree in an ignored folder
+        let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.into());
+        let others = git(&w.repo, &["worktree", "list", "--porcelain"])?;
+        let others = others.lines().filter_map(|l| l.strip_prefix("worktree ")).map(PathBuf::from).chain(load().into_iter().map(|w| w.path()));
+        if let Some(inside) = others.map(|o| real(&o)).find(|o| *o != real(&path) && o.starts_with(real(&path))) {
+            return Err((tr().has_inside)(&tilde(&inside)));
+        }
         let args: &[&str] = if force { &["worktree", "remove", "--force", p] } else { &["worktree", "remove", p] };
         git(&w.repo, args)?; // first: a dirty worktree fails here, before we touch its terminal
     } else {
         git(&w.repo, &["worktree", "prune"])?;
     }
-    for p in tabs(&w.id()) {
-        tmux(&["kill-pane", "-t", &p.pane])?;
+    change(|wts| {
+        let parent = wts.iter().find(|x| x.is(w)).and_then(|x| x.parent.clone());
+        wts.retain(|x| !x.is(w));
+        for child in wts.iter_mut().filter(|x| x.repo == w.repo && x.parent.as_ref() == Some(&w.name)) {
+            child.parent = parent.clone(); // up one level
+        }
+        Ok(())
+    })?;
+    // its own terminal goes last: with it, this process ends
+    let me = env::var("TMUX_PANE").unwrap_or_default();
+    let mut all = tabs(&w.id());
+    all.sort_by_key(|p| p.pane == me);
+    for p in all {
+        tmux(&["kill-pane", "-t", &p.pane]).ok(); // it may be gone already
     }
-    let mut left: Vec<Wt> = load().into_iter().filter(|x| x != w).collect();
-    for child in left.iter_mut().filter(|x| x.repo == w.repo && x.parent.as_ref() == Some(&w.name)) {
-        child.parent = w.parent.clone(); // up one level
-    }
-    save(&left)?;
     if tmux(&["has-session", "-t", UI]).is_ok() {
         ensure_ui()?; // the killed pane may have been the visible one
     }
@@ -434,6 +574,13 @@ pub struct Pane {
     pub cmd: String,
     /// what its agent said, and when
     pub agent: Option<(Agent, u64)>,
+    /// its mark as it is, and the title of its terminal
+    pub mark: String,
+    pub title: String,
+    /// no program but the shell
+    pub shell: bool,
+    /// when its window last printed something: its own only while it is hidden
+    pub activity: u64,
 }
 
 impl Pane {
@@ -461,16 +608,17 @@ pub fn foremost<'a>(tabs: impl Iterator<Item = &'a Pane>) -> Option<&'a Pane> {
 }
 
 pub fn panes() -> Vec<Pane> {
-    let f = "#{pane_id}\t#{@orcux}\t#{@orcux_tab}\t#{@orcux_on}\t#{@orcux_busy}\t#{pane_current_command}\t#{@orcux_state}";
+    let f = "#{pane_id}\t#{@orcux}\t#{@orcux_tab}\t#{@orcux_on}\t#{@orcux_busy}\t#{pane_current_command}\t#{@orcux_state}\t#{window_activity}\t#{pane_title}";
     tmux(&["list-panes", "-a", "-F", f]).unwrap_or_default().lines()
         .map(|l| {
             let mut p = l.split('\t').map(String::from);
             let mut next = || p.next().unwrap_or_default();
             let (pane, wt, tab, on, busy, cmd) = (next(), next(), next().parse().unwrap_or(1), next() == "1", next() == "1", next());
             // back in the shell: the agent is gone, whatever it said last
-            let shell = ["zsh", "bash", "fish", "sh", "nu"].contains(&cmd.trim_start_matches('-'));
-            let agent = if shell { None } else { Agent::parse(&next()) };
-            Pane { pane, wt, tab, on, busy, cmd, agent }
+            let shell = ["zsh", "bash", "fish", "sh", "dash", "ksh", "nu"].contains(&cmd.trim_start_matches('-'));
+            let (mark, activity, title) = (next(), next().parse().unwrap_or(0), next());
+            let agent = if shell { None } else { Agent::parse(&mark) };
+            Pane { pane, wt, tab, on, busy, cmd, agent, mark, title, shell, activity }
         })
         .filter(|p| !p.wt.is_empty())
         .collect()
@@ -504,6 +652,7 @@ fn pane_at(w: &Wt, tab: Option<u32>) -> Res<String> {
 }
 
 fn spawn(w: &Wt) -> Res<String> {
+    let _lock = lock();
     let (id, path) = (w.id(), w.path().to_string_lossy().to_string());
     let taken: Vec<u32> = tabs(&id).iter().map(|p| p.tab).collect();
     let tab = (1..).find(|n| !taken.contains(n)).unwrap().to_string();
@@ -512,7 +661,9 @@ fn spawn(w: &Wt) -> Res<String> {
     } else {
         vec!["new-session".into(), "-d".into(), "-s".into(), BG.into()]
     };
-    a.extend(["-n".into(), id.clone(), "-c".into(), path, "-P".into(), "-F".into(), "#{pane_id}".into()]);
+    // tmux expands formats in these two: "fix-#Solo" would start somewhere else
+    let plain = |s: &str| s.replace('#', "##");
+    a.extend(["-n".into(), plain(&id), "-c".into(), plain(&path), "-P".into(), "-F".into(), "#{pane_id}".into()]);
     for e in w.env() {
         a.extend(["-e".into(), e]);
     }
@@ -531,7 +682,7 @@ fn ensure_pane(w: &Wt) -> Res<String> {
 }
 
 fn type_into(pane: &str, text: &str) -> Res<()> {
-    tmux(&["send-keys", "-t", pane, "-l", text])?;
+    tmux(&["send-keys", "-t", pane, "-l", "--", text])?;
     thread::sleep(Duration::from_millis(150)); // TUIs like claude treat text+Enter in one burst as a paste
     tmux(&["send-keys", "-t", pane, "Enter"]).map(|_| ())
 }
@@ -545,6 +696,7 @@ fn ui_panes() -> Vec<(String, String)> {
 
 /// Session "orcux": left pane = sidebar, right pane = whichever worktree terminal is shown.
 pub fn ensure_ui() -> Res<()> {
+    let _lock = lock();
     let home = home().to_string_lossy().to_string();
     let exe = env::current_exe().map_err(|e| e.to_string())?;
     let welcome = format!("'{}' welcome", exe.display());
@@ -631,6 +783,9 @@ fn restart_panes() -> Res<()> {
 pub fn toggle_rail() -> Res<()> {
     let choice = if ui_pane(RAIL).is_some() { "off" } else { "on" };
     tmux(&["set-option", "-t", &format!("{UI}:"), "@orcux_prs", choice])?;
+    if ui_pane(RAIL) == env::var("TMUX_PANE").ok() {
+        return Ok(()); // it would close itself halfway: the sidebar is told of the option
+    }
     sync_rail()
 }
 
@@ -660,6 +815,7 @@ impl Binary {
 /// Becomes the new version of itself. Only returns if it could not.
 pub fn restart_self() -> String {
     use std::os::unix::process::CommandExt;
+    control::close();
     match env::current_exe() {
         Ok(exe) => Command::new(exe).args(env::args().skip(1)).exec().to_string(),
         Err(e) => e.to_string(),
@@ -672,11 +828,11 @@ pub fn style_ui() -> Res<()> {
     let (abyss, hull, line, foam) = (hex(theme::ABYSS), hex(theme::HULL), hex(theme::LINE), hex(theme::FOAM));
     let status = format!("bg={abyss},fg={foam}");
     for (k, v) in [("status", "on"), ("status-style", status.as_str()), ("status-left-length", "120"), ("status-right-length", "80")] {
-        tmux(&["set-option", "-t", &t, k, v])?;
+        tmux(&["set-option", "-t", &t, k, v]).ok();
     }
     let (gap, card) = (format!("bg={abyss},fg={abyss}"), format!("bg={hull}"));
     let rail = format!("#[bg={hull}#,fg={foam}#,bold]  {}  #[default]", tr().your_prs);
-    // the logo: an "o" of four by four dots, and the name. No commas: it goes inside a tmux conditional
+    // the logo, an "o" of four by four dots, and the name. No commas: it goes inside a tmux conditional
     let blue = hex(theme::CURRENT);
     let name = format!("#[fg={blue}]⢎#[fg={foam}]⡱ #[bold]orcux");
     let titles = format!("#{{?#{{==:#{{@orcux}},{SIDEBAR}}},{name},#{{?#{{==:#{{@orcux}},{RAIL}}},{rail},#{{@orcux_bar}}}}}}");
@@ -690,7 +846,7 @@ pub fn style_ui() -> Res<()> {
         ("pane-border-status", "top"),
         ("pane-border-format", titles.as_str()),
     ] {
-        tmux(&["set-option", "-w", "-t", &t, k, v])?;
+        tmux(&["set-option", "-w", "-t", &t, k, v]).ok(); // an older tmux lacks some
     }
     // Key tables are shared by every session: outside orcux the key goes on to the program, as if not bound.
     let exe = env::current_exe().map_err(|e| e.to_string())?;
@@ -710,9 +866,10 @@ pub fn style_ui() -> Res<()> {
         (&["å", "M-a"], tab("prev")),
         (&["∂", "M-d"], tab("next")),
         (&["œ", "M-q"], close),
+        (&["®", "M-r"], format!("run-shell -b \"'{}' next >/dev/null 2>&1 || true\"", exe.display())),
     ] {
         for k in keys {
-            tmux(&["bind-key", "-n", k, "if-shell", "-F", "#{==:#{session_name},orcux}", &cmd, &format!("send-keys {k}")])?;
+            tmux(&["bind-key", "-n", k, "if-shell", "-F", "#{==:#{session_name},orcux}", &cmd, &format!("send-keys {k}")]).ok();
         }
     }
     Ok(())
@@ -733,6 +890,7 @@ pub fn show(w: &Wt) -> Res<()> {
 }
 
 pub fn show_tab(w: &Wt, tab: Option<u32>) -> Res<()> {
+    let _lock = lock();
     ensure_ui()?;
     let pane = pane_at(w, tab)?;
     let (right, mark) = terminal_pane().ok_or(tr().no_pane)?;
@@ -756,12 +914,10 @@ pub fn show_tab(w: &Wt, tab: Option<u32>) -> Res<()> {
 pub fn popup(title: &str, want: (u32, u32), args: &[&str]) -> Res<()> {
     let exe = env::current_exe().map_err(|e| e.to_string())?;
     // tmux rejects a popup larger than the client instead of clamping it
-    let size = tmux(&["display-message", "-p", "#{client_width} #{client_height}"])?;
-    let (w, h) = size.split_once(' ').unwrap_or_default();
-    let fit = |have: &str, want: u32| have.parse().map_or(want, |n: u32| n.min(want)).to_string();
-    let (w, h, title) = (fit(w, want.0), fit(h, want.1), format!("#[fg={}] {title} ", hex(theme::FOAM)));
+    let (client, w, h) = viewer().ok_or(tr().no_pane)?;
+    let (w, h, title) = (w.min(want.0).to_string(), h.min(want.1).to_string(), format!("#[fg={}] {title} ", hex(theme::FOAM)));
     let (style, edge) = (format!("bg={},fg={}", hex(theme::HULL), hex(theme::FOAM)), format!("bg={},fg={}", hex(theme::HULL), hex(theme::LINE)));
-    let mut a = vec!["display-popup", "-E", "-b", "rounded", "-s", &style, "-S", &edge, "-T", &title, "-w", &w, "-h", &h, exe.to_str().ok_or(tr().non_utf8)?];
+    let mut a = vec!["display-popup", "-c", &client, "-E", "-b", "rounded", "-s", &style, "-S", &edge, "-T", &title, "-w", &w, "-h", &h, exe.to_str().ok_or(tr().non_utf8)?];
     a.extend(args); // several args = exec without a shell, so no quoting
     tmux(&a).map(|_| ())
 }
@@ -772,13 +928,14 @@ pub fn folded() -> Vec<PathBuf> {
 }
 
 pub fn toggle_fold(p: &Path) {
+    let _lock = lock();
     let mut f = folded();
     match f.iter().position(|x| x == p) {
         Some(i) => { f.remove(i); }
         None => f.push(p.into()),
     }
     let s: String = f.iter().map(|p| format!("{}\n", p.display())).collect();
-    fs::write(state_dir().join("folded"), s).ok();
+    write_state("folded", &s).ok();
 }
 
 /// Repos by the folder they are in, both in order of appearance, with a name for each folder: its last part, or the
@@ -808,11 +965,12 @@ fn recent() -> Vec<String> {
 }
 
 fn touch_recent(id: &str) {
+    let _lock = lock();
     let mut r = recent();
     r.retain(|x| x != id);
     r.insert(0, id.into());
     r.truncate(50);
-    fs::write(state_dir().join("recent"), r.join("\n")).ok();
+    write_state("recent", &r.join("\n")).ok();
 }
 
 /// Every worktree: the visible one first, then by last use.
@@ -880,6 +1038,7 @@ pub fn step_tab(forward: bool) -> Res<()> {
 }
 
 pub fn close_tab(w: &Wt, n: u32) -> Res<()> {
+    let _lock = lock();
     let pane = pane_at(w, Some(n))?;
     let on_screen = terminal_pane().is_some_and(|p| p.0 == pane);
     let t = tabs(&w.id());
@@ -942,16 +1101,38 @@ fn flag<'a>(a: &[&'a str], f: &str) -> Option<&'a str> {
 }
 
 fn cli(a: &[&str]) -> Res<()> {
+    // what a person waits for: a dozen questions to tmux, through one connection
+    if matches!(a, ["show", ..] | ["tab", ..] | ["switch"] | ["next"] | ["dialog", ..]) {
+        control::borrow();
+    }
     match a {
         [] => attach(),
         ["sidebar"] => tui::run(),
-        ["hook", event] => {
-            agent::hook(event);
+        ["hook", event, rest @ ..] => {
+            agent::hook(event, rest == ["exact"]);
             Ok(())
         }
+        ["run", rest @ ..] => work::run_task(rest),
+        ["agents", rest @ ..] => work::agents_cmd(rest),
+        ["wait", rest @ ..] => std::process::exit(work::wait(rest)?),
+        ["next"] => work::next(),
+        ["skill"] => {
+            print!("{}", agent::SKILL);
+            Ok(())
+        }
+        ["notify"] => {
+            println!("{} ({})", work::notify_mode(), work::NOTIFY.join(", "));
+            Ok(())
+        }
+        ["notify", mode] if work::NOTIFY.contains(mode) => work::set_notify(mode),
         ["rail"] => tui::rail(),
         ["welcome"] => tui::welcome(),
         ["prs"] => prs::print(),
+        ["doctor"] => doctor::run_all(),
+        ["--version" | "-V" | "version"] => {
+            println!("orcux {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         ["switch"] => tui::switch(),
         ["commands"] => tui::commands(),
         ["dialog", "new", repo] => tui::dialog_new(Path::new(repo), None),
@@ -998,14 +1179,8 @@ fn cli(a: &[&str]) -> Res<()> {
             println!("{}", (text.lang_now)(code, &i18n::codes()));
             restart_panes()
         }
-        ["ls"] => {
-            let live: Vec<String> = panes().into_iter().map(|p| p.wt).collect();
-            for w in load() {
-                let st = if live.contains(&w.id()) { "up" } else { "-" };
-                println!("{:<40} :{:<6} {:<3} {}", w.id(), w.port(), st, w.path().display());
-            }
-            Ok(())
-        }
+        ["ls"] => work::ls(false),
+        ["ls", "--json"] => work::ls(true),
         ["show", q] => {
             let (w, n) = target(q)?;
             show_tab(&w, n)
@@ -1043,7 +1218,12 @@ fn cli(a: &[&str]) -> Res<()> {
             Ok(())
         }
         ["env", rest @ ..] => {
-            find(rest.first().copied())?.env().iter().for_each(|e| println!("export {e}"));
+            // quoted: one of them is JSON
+            for e in find(rest.first().copied())?.env() {
+                let (k, v) = e.split_once('=').unwrap_or((&e, ""));
+                let plain = v.chars().all(|c| c.is_ascii_alphanumeric() || "/._:-@+".contains(c));
+                println!("export {k}={}", if plain { v.into() } else { format!("'{}'", v.replace('\'', "'\\''")) });
+            }
             Ok(())
         }
         ["repo", "rm", rest @ ..] => {

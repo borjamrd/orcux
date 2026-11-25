@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request: # of forks: those of this repository are pushes already
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: tmux
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then sudo apt-get update -q && sudo apt-get install -yq tmux; else brew install tmux; fi
+          tmux -V
+      - name: Rust
+        run: rustup update stable --no-self-update && rustup default stable && rustup component add clippy
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+      - name: Speed
+        # shared machines: the times get room, the number of processes does not
+        run: cargo test --release --locked --test perf -- --ignored --nocapture
+        env:
+          ORCUX_PERF_ROOM: 6
+      - run: cargo run --release --locked -- doctor
