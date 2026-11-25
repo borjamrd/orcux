@@ -922,7 +922,7 @@ pub fn run() -> Res<()> {
                     let dir = v.wt.path().to_string_lossy().to_string();
                     app.popup(&path.clone(), (148, 48), &["dialog", "diff", &dir, &path]);
                 },
-                KeyCode::Char('?') => app.popup(tr().title_commands, (148, 34), &["commands"]),
+                KeyCode::Char('?') => app.popup(tr().title_commands, (148, 40), &["commands"]),
                 KeyCode::Char('q') => { detach().ok(); }
                 _ => {}
             }
@@ -932,7 +932,7 @@ pub fn run() -> Res<()> {
             KeyCode::Char('q') => { detach().ok(); }
             KeyCode::Char('j') | KeyCode::Down => app.sel = (app.sel + 1).min(app.rows.len().saturating_sub(1)),
             KeyCode::Char('k') | KeyCode::Up => app.sel = app.sel.saturating_sub(1),
-            KeyCode::Char('?') => app.popup(tr().title_commands, (148, 34), &["commands"]),
+            KeyCode::Char('?') => app.popup(tr().title_commands, (148, 40), &["commands"]),
             KeyCode::Char('p') => if let Err(e) = toggle_rail() {
                 app.error(&e);
             },
@@ -1286,7 +1286,7 @@ pub fn rail() -> Res<()> {
             (KeyCode::Char('k') | KeyCode::Up, _) => { sel = sel.saturating_sub(1); Ok(()) }
             (KeyCode::Tab, _) => focus(SIDEBAR),
             (KeyCode::Char('p'), _) => toggle_rail(), // closes this pane
-            (KeyCode::Char('?'), _) => popup(tr().title_commands, (148, 34), &["commands"]),
+            (KeyCode::Char('?'), _) => popup(tr().title_commands, (148, 40), &["commands"]),
             (KeyCode::Char('r'), _) if busy.is_none() => { busy = Some(thread::spawn(|| { prs::refresh().ok(); })); Ok(()) }
             (KeyCode::Char('o'), Some(p)) => open_url(&p.url),
             (KeyCode::Enter, Some(p)) => view(p),
@@ -1734,16 +1734,17 @@ pub fn commands() -> Res<()> {
         let (mut max, mut animated) = (0, false);
         let drawn = term.draw(|f| {
             let mut area = f.area();
-            // the mark, waving, beside the list if there is room for both
-            if area.width >= 94 + 4 + mark::W && area.height >= mark::H + 3 {
+            // the mark, waving, beside the list if there is room for both, centred on its height
+            if area.width >= 94 + 4 + mark::W && area.height >= mark::H + 4 {
                 animated = true;
                 let [side, list] = Layout::horizontal([Constraint::Length(mark::W + 4), Constraint::Fill(1)]).areas(area);
                 area = list;
-                f.render_widget(Paragraph::new(mark::waving(start.elapsed().as_secs_f32())), side.inner(Margin::new(2, 1)));
+                let at = Rect { x: side.x + 2, y: side.y + (side.height - mark::H) / 2, width: mark::W, height: mark::H };
+                f.render_widget(Paragraph::new(mark::waving(start.elapsed().as_secs_f32())), at);
             }
-            let [_, input, _, body, _, foot] = Layout::vertical([
-                Constraint::Length(1), Constraint::Length(1), Constraint::Length(1),
-                Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1),
+            let [_, input, _, body, _, foot, _] = Layout::vertical([
+                Constraint::Length(2), Constraint::Length(1), Constraint::Length(1),
+                Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1), Constraint::Length(2),
             ]).areas(area);
             f.render_widget(lr(input.width, vec![fg(format!(" {}: ", tr().search), MUTED), fg(format!("{query}▏"), FOAM)], vec![]).bg(WAKE), input);
             let wide = body.width >= 90;

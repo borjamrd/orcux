@@ -42,51 +42,16 @@ fn color(x: usize, y: usize) -> u32 {
     }
 }
 
-/// The dots of the mark: (columns, rows) of dots, two by four per cell.
-fn dots() -> Vec<Vec<bool>> {
-    let (w, h) = (W as usize * 2, H as usize * 4);
-    let mut d = vec![vec![false; w]; h];
-    for (cy, row) in MARK.iter().enumerate() {
-        for (cx, c) in row.chars().enumerate() {
-            let bits = (c as u32).wrapping_sub(0x2800);
-            if bits > 0xff {
-                continue;
-            }
-            for (bit, (dx, dy)) in [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2), (0, 3), (1, 3)].into_iter().enumerate() {
-                if bits & (1 << bit) != 0 {
-                    d[cy * 4 + dy][cx * 2 + dx] = true;
-                }
-            }
-        }
-    }
-    d
-}
-
-/// The mark waving like a flag, at `t` seconds: a wave runs across it, diagonally, moving its dots up and down and
-/// lighting them as it passes. One row taller than the still one.
+/// The mark waving like a flag, at `t` seconds: its shape stays, and a light runs across it diagonally, as over cloth.
 pub fn waving(t: f32) -> Vec<Line<'static>> {
     use std::f32::consts::TAU;
-    let d = dots();
-    let h = d.len();
-    let phase = |x: usize, y: usize| TAU * ((x as f32) * 0.9 + (y as f32) * 0.55) / 34.0 - t * 2.6;
-    let lift = |x: usize, y: usize| 1.6 * phase(x, y).sin();
-    let at = |x: usize, y: i32| y >= 0 && (y as usize) < h && d[y as usize][x];
-    (0..H as usize + 1).map(|cy| {
-        let spans: Vec<Span> = (0..W as usize).map(|cx| {
-            let mut bits = 0u32;
-            for (bit, (dx, dy)) in [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2), (0, 3), (1, 3)].into_iter().enumerate() {
-                let (x, y) = (cx * 2 + dx, cy * 4 + dy);
-                // where this dot comes from, before the wave moved it
-                if at(x, y as i32 - 2 - lift(x, y).round() as i32) {
-                    bits |= 1 << bit;
-                }
-            }
-            let glow = ((phase(cx * 2, cy * 4).sin() + 1.0) * 14.0) as u32;
-            let base = color(cx, cy.min(H as usize - 1));
-            let c = char::from_u32(0x2800 + bits).unwrap_or(' ');
-            Span::styled(if bits == 0 { " ".into() } else { c.to_string() }, Color::from_u32(mix(base, theme::FOAM, glow)))
-        }).collect();
-        Line::from(spans)
+    MARK.iter().enumerate().map(|(y, row)| {
+        row.chars().enumerate().map(|(x, c)| {
+            let wave = (TAU * (x as f32 + y as f32 * 2.2) / 26.0 - t * 2.4).sin();
+            // the crests take it towards the foam, the troughs towards the deep
+            let color = if wave > 0.0 { mix(color(x, y), theme::FOAM, (wave * 55.0) as u32) } else { mix(color(x, y), theme::DEEP, (-wave * 35.0) as u32) };
+            Span::styled(c.to_string(), Color::from_u32(color))
+        }).collect::<Vec<_>>().into()
     }).collect()
 }
 
@@ -102,14 +67,11 @@ mod tests {
 
     #[test]
     fn waves() {
-        let still: usize = dots().iter().flatten().filter(|d| **d).count();
-        for t in [0.0, 0.7, 1.9, 12.3] {
-            let f = waving(t);
-            assert!(f.len() == H as usize + 1 && f.iter().all(|l| l.width() == W as usize));
-            let shown: u32 = f.iter().flat_map(|l| l.spans.iter()).filter_map(|s| s.content.chars().next()).map(|c| (c as u32).saturating_sub(0x2800).count_ones()).sum();
-            assert!((shown as f32 - still as f32).abs() < still as f32 * 0.15, "{t}: {shown} of {still}"); // moved, not lost
+        let text = |f: &[Line]| f.iter().map(|l| l.to_string()).collect::<Vec<_>>();
+        for t in [0.0, 0.7, 12.3] {
+            assert_eq!(text(&waving(t)), MARK); // the same shape
         }
-        assert_ne!(waving(0.0), waving(0.5));
+        assert_ne!(waving(0.0), waving(0.5)); // other colors
     }
 
     #[test]
