@@ -65,5 +65,6 @@ fn fifty_terminals_cost_nothing_at_rest() {
     assert!(calls.is_empty(), "tmux processes at rest:\n{calls}");
     assert!(used.iter().all(|u| *u <= CPU), "CPU at rest: {used:?}");
     assert!(ls[4] < Duration::from_millis(50), "`orcux ls` took {:?}", ls[4]);
+    assert!(show[4] < Duration::from_millis(100), "`orcux show` took {:?}", show[4]);
     assert!(start < Duration::from_secs(1), "it took {start:?} to start");
 }

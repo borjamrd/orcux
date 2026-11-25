@@ -1087,6 +1087,10 @@ fn flag<'a>(a: &[&'a str], f: &str) -> Option<&'a str> {
 }
 
 fn cli(a: &[&str]) -> Res<()> {
+    // what a person waits for: a dozen questions to tmux, through one connection
+    if matches!(a, ["show", ..] | ["tab", ..] | ["switch"] | ["dialog", ..]) {
+        control::borrow();
+    }
     match a {
         [] => attach(),
         ["sidebar"] => tui::run(),

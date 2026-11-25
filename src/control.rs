@@ -45,7 +45,19 @@ fn watched() -> String {
     format!("#{{S:#{{?#{{m:orcux*,#{{session_name}}}},#{{session_attached}} #{{@orcux_prs}} #{{W:#{{window_width}} #{{P:{pane}}}}},}}}}")
 }
 
+/// For a command that asks tmux many things: without news. If there is no session to attach to, the first question
+/// finds out, and the rest are processes.
+pub fn borrow() {
+    if open(|_| ()) {
+        command(&["display-message", "-p", "ready"]);
+    }
+}
+
 pub fn connect(news: impl Fn(News) + Send + 'static) -> bool {
+    open(news) && command(&["refresh-client", "-B", &format!("orcux::{}", watched())]).is_some_and(|r| r.is_ok())
+}
+
+fn open(news: impl Fn(News) + Send + 'static) -> bool {
     close();
     let spawned = Command::new("tmux").args(["-u", "-C", "attach-session", "-t", UI, "-f", "ignore-size,no-output"])
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn();
@@ -83,7 +95,7 @@ pub fn connect(news: impl Fn(News) + Send + 'static) -> bool {
     if let Ok(mut l) = LINK.lock() {
         *l = Some(Link { child, stdin, replies, count: 0 });
     }
-    command(&["refresh-client", "-B", &format!("orcux::{}", watched())]).is_some_and(|r| r.is_ok())
+    true
 }
 
 /// Also before becoming another version of itself: the process of the connection must not outlive it.

@@ -12,13 +12,13 @@ It does not emulate terminals: **ratatui draws the sidebar and tmux runs the ter
 - `cargo build --release`: the binary is `target/release/orcux`, linked from `~/.local/bin/orcux`.
 - `cargo test`: PR classification and parsing, agent states, language choice, text widths per language.
 - `cargo test` also runs `tests/parallel.rs` (several orcux at once) in a tmux of its own (`tests/lab`); without tmux it is skipped.
-- `cargo test --release --test perf -- --ignored --nocapture`: what 50 terminals cost, in a tmux of its own. Limits: no tmux process at rest, 0.5 % of a core per open pane, `orcux ls` under 50 ms, start under 1 s. Run it after touching the loops of `tui.rs` or `control.rs`.
+- `cargo test --release --test perf -- --ignored --nocapture`: what 50 terminals cost, in a tmux of its own. Limits: no tmux process at rest, 0.5 % of a core per open pane, `orcux ls` under 50 ms, `orcux show` under 100 ms, start under 1 s. Run it after touching the loops of `tui.rs` or `control.rs`.
 - `orcux help`: lists the subcommands. The same table (`commands` in `src/i18n/*.rs`) feeds the sidebar's `?` dialog (`orcux commands` in a tmux popup): every new command or shortcut goes there, in every language.
 
 ## Architecture (1 dependency: ratatui)
 
 - `src/main.rs`: CLI, git, tmux and state.
-- `src/control.rs`: a lasting connection to tmux (control mode) for the sidebar, the rail and the placeholder. `tmux()` goes through it when there is one; elsewhere, and with an old tmux, it is a process.
+- `src/control.rs`: a lasting connection to tmux (control mode) for the sidebar, the rail and the placeholder. `tmux()` goes through it when there is one; commands that ask many things (`show`, `tab`, `switch`) borrow one; elsewhere, and with an old tmux, it is a process.
 - `src/tui.rs`: the sidebar (`orcux sidebar`, the UI's left pane), the PR rail (`orcux rail`, right pane) and the dialogs. Colors come from `src/theme.rs` (design system "orcux"), also for tmux styles.
 - `src/i18n/`: every text the user sees, one file per language (`en`, `es`). Never write a user-facing literal elsewhere: add a field to `Text` (a missing translation does not compile) and use `tr().field`; texts with data are functions. Language: `ORCUX_LANG`, then `orcux lang <code>` (saved in `lang`), then the system, then English. The `every_language_fits` test checks widths.
 - `src/orc.rs`: the animated orc of the commands dialog, at its left (from 134 columns and 22 rows): only the bust, without a background.
