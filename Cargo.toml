@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.89"
 description = "Git worktrees, ports and terminals for several coding agents at once, in your terminal"
+license = "MIT"
 repository = "https://github.com/borjamrd/orcux"
 readme = "README.md"
 keywords = ["worktree", "tmux", "agents", "terminal", "tui"]
