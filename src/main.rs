@@ -326,7 +326,7 @@ pub fn create_from(repo: &Path, name: &str, cmd: Option<&str>, parent: Option<&W
     Ok(wt)
 }
 
-/// Same contract as Orca: copy the local-only files listed in the main checkout's .worktreeinclude.
+/// Copies the local-only files listed in the main checkout's .worktreeinclude.
 // ponytail: literal paths only (files or dirs); glob lines are skipped. Add `git ls-files -oi` if globs are needed.
 fn copy_includes(repo: &Path, dst: &Path) -> Res<()> {
     let Ok(list) = fs::read_to_string(repo.join(".worktreeinclude")) else { return Ok(()) };
@@ -437,7 +437,7 @@ pub struct Pane {
 impl Pane {
     pub fn look(&self) -> prs::State {
         match self.agent.map(|a| a.0) {
-            Some(a) if a.waits() => prs::State::Waiting,
+            Some(a) if a.waits() => prs::State::Asking,
             Some(Agent::Failed) => prs::State::Failed,
             _ if self.busy => prs::State::Working,
             Some(Agent::Done) => prs::State::Done,
@@ -449,7 +449,7 @@ impl Pane {
 /// The tab of a worktree that matters most: one that waits for the user, then failed, working, done and idle.
 pub fn foremost<'a>(tabs: impl Iterator<Item = &'a Pane>) -> Option<&'a Pane> {
     let rank = |s: prs::State| match s {
-        prs::State::Waiting => 0,
+        prs::State::Asking | prs::State::Waiting => 0,
         prs::State::Failed => 1,
         prs::State::Working => 2,
         prs::State::Done => 3,
@@ -1067,9 +1067,9 @@ mod tests {
     #[test]
     fn folders() {
         let p = |l: &[&str]| l.iter().map(PathBuf::from).collect::<Vec<_>>();
-        let got = by_folder(&p(&["/w/fever/a", "/w/own/b", "/w/fever/c", "/z/own/d"]));
+        let got = by_folder(&p(&["/w/acme/a", "/w/own/b", "/w/acme/c", "/z/own/d"]));
         let names: Vec<(&str, usize)> = got.iter().map(|g| (g.1.as_str(), g.2.len())).collect();
-        assert_eq!(names, [("fever", 2), ("w/own", 1), ("z/own", 1)]);
+        assert_eq!(names, [("acme", 2), ("w/own", 1), ("z/own", 1)]);
     }
 
     #[test]

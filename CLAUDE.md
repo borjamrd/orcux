@@ -1,11 +1,11 @@
 # orcux
 
-A lightweight alternative to Orca (orca.dev) in Rust. Of Orca it keeps only three things:
+A lightweight worktree manager for coding agents, in Rust. It does only three things:
 1. worktree management
 2. a port block per worktree
 3. a CLI to talk between worktrees (create, delete, send/read terminal)
 
-It looks like herdr (herdr.dev: Rust + ratatui + its own VT), but orcux has worktrees and does not emulate terminals. **ratatui draws the sidebar and tmux runs the terminals**, so agents survive when the UI is closed.
+It does not emulate terminals: **ratatui draws the sidebar and tmux runs the terminals**, so agents survive when the UI is closed.
 
 ## Commands
 
@@ -33,11 +33,11 @@ Model:
 - State in plain files in `~/.local/state/orcux/`: `worktrees.tsv` (repo, name, slot), `repos`, `folded` (folders and repos folded in the sidebar), `recent` (ids by last `show`) and `prs.2.tsv` (cache).
 - Opt+t/a/d/q: new, previous, next and close tab. Only letters whose Option character is the same on the Spanish and US layouts (Opt+x on Spanish types `∑`, which is Opt+w on US).
 - Opt+w opens `orcux switch` in a popup. Terminal.app cannot send Cmd keys, and without Option as Meta it types a character (`æ` on the Spanish layout), so those characters are bound in the root table (`SWITCH_KEYS`, set by the sidebar at start). tmux key tables are global: the binding checks the session name and passes the key on elsewhere. The sidebar marks working panes with `@orcux_busy`, for processes that do not watch screens.
-- Agent states: each worktree terminal gets `CLAUDE_CODE_PLUGIN_DIRS` with a plugin that orcux writes in `~/.local/state/orcux/claude-plugin` (the user's `settings.json` is never touched). Its hooks run `orcux hook <state>` (internal), which sets the pane option `@orcux_state="<state> <since>"`. The sidebar corrects what no hook tells (`agent::settle`): answered or rejected question, interrupted turn, result already seen. Panes without a mark (other agents, or opened before) fall back to "screen changed in the last 3s".
+- Agent states: each worktree terminal gets `CLAUDE_CODE_PLUGIN_DIRS` with a plugin that orcux writes in `~/.local/state/orcux/claude-plugin` (the user's `settings.json` is never touched). Its hooks run `orcux hook <state>` (internal), which sets the pane option `@orcux_state="<state> <since>"`. The sidebar corrects what no hook tells (`agent::settle`): answered or rejected question, interrupted turn, result already seen. Glyph of an agent that waits for the user: `?` (`State::Asking`); `◆` is only for PRs. Panes without a mark (other agents, or opened before) fall back to "screen changed in the last 3s".
 - Prompts and errors are popups, never sidebar text: the sidebar calls `popup()`, which runs `orcux dialog new|rm|error` (internal) in a centered `display-popup` and blocks until it closes.
 - Worktrees go in `~/orcux/<repo>/<name>`. `orcux import` registers existing ones where they are (4th column of `worktrees.tsv`): they are named after their folder, never moved, and `rm`/`d` only unregisters them, even with `--force`. PRs match a worktree by its checked-out branch, read from git's files.
 - `worktrees.tsv` columns: repo, name, slot, path if imported, parent's name if it is a child. A child starts at its parent's last commit and is drawn under it; its folder is not inside, and removing the parent moves it up one level. Each pane gets `ORCUX_PORT=10000+slot*100`, `ORCUX_ID`, `ORCUX_SLOT` and `COMPOSE_PROJECT_NAME` via `tmux -e`.
-- `.worktreeinclude` in the main checkout is copied into the new worktree (same contract as Orca; literal paths only, globs skipped).
+- `.worktreeinclude` in the main checkout is copied into the new worktree (literal paths only, globs skipped).
 - New branch from `origin/HEAD` with `--no-track`. If the branch exists locally or on origin, it is reused.
 
 ## Gotchas already paid for
@@ -48,6 +48,7 @@ Model:
 - `display-popup` fails if it is larger than the client (no clamping), so `popup()` caps it to the client size. A detach closes the popup with a non-zero exit and empty stderr: not an error.
 - tmux scales panes proportionally when the client attaches or resizes: `ensure_ui` pins the sidebar to 36 columns with a `window-resized` hook (dragging the border by hand still works).
 - `orcux dialog view <url>` is the dialog of one PR (Enter or click in the rail): it loads its details in a thread. Read-only towards GitHub. `a` pastes a one-line prompt into the worktree's agent WITHOUT Enter and as a bracketed paste: keys could answer an open permission menu. Text by other people is stripped of control characters and quoted as data.
+- GitHub's CI summary (`statusCheckRollup.state`) counts every run, also a cancelled one that was run again, and checks that block nothing. `recheck` asks again about the red PRs: the last run of each check, and only required ones make CI fail (all of them if none is required). A failing optional check is shown in the PR dialog only.
 - Conflicting files are not in GitHub's API: both branches are fetched and merged in memory (`git merge-tree`).
 - The sidebar and the rail replace themselves (exec) when the binary changes, so a build needs no restart. A mix of versions once made PRs vanish: the old sidebar kept rewriting the cache in its format. Bump the number in `cache_file()` when the format changes.
 - A `gh` account that fails keeps its previous PRs. If its token cannot be read it counts as failed: without it gh answers as another account, with no PRs and no error.
@@ -76,10 +77,10 @@ tmux kill-server; rm -rf ~/.cache/orcux-test
 
 ## Known pending items (not done on purpose)
 
-- `orcux ls --json`, for `~/orquestador/estado.py`, which today reads `orca worktree ps --json`.
-- Docker Compose with fixed ports (fever2: 8010/8012) still collides; those ports would have to read `$ORCUX_PORT`.
+- `orcux ls --json`, for scripts.
+- Docker Compose with fixed ports still collides; those ports would have to read `$ORCUX_PORT`.
 - Agents other than Claude Code have no hooks: working/idle = "screen changed in the last 3s".
 - Globs in `.worktreeinclude` (`git ls-files -oi --exclude-from`).
-- A `wait <wt>` command (wait until an agent is idle), like Orca/herdr.
+- A `wait <wt>` command (wait until an agent is idle).
 
 Deliberate simplifications are marked with `ponytail:` comments in the code.
