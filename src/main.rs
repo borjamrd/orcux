@@ -8,6 +8,7 @@ mod pixels;
 mod prs;
 mod theme;
 mod tui;
+mod work;
 
 use std::{collections::BTreeMap, env, fs, path::{Path, PathBuf}, process::Command, thread, time::Duration};
 
@@ -22,6 +23,8 @@ const UI_NAME: &str = "orcux";
 const BG: &str = "orcux-bg"; // hidden session: one window per worktree terminal
 /// Claude Code loads the plugins in these folders, for that terminal only.
 const PLUGINS: &str = "CLAUDE_CODE_PLUGIN_DIRS";
+/// OpenCode adds this to its configuration.
+const OPENCODE: &str = "OPENCODE_CONFIG_CONTENT";
 pub const SIDEBAR: &str = "__sidebar";
 pub const RAIL: &str = "__prs"; // right pane: pull requests
 /// Opt+w: what macOS types for it on the Spanish and US layouts, and what terminals with Option as Meta send.
@@ -116,6 +119,10 @@ impl Wt {
             let (dir, others) = (dir.display().to_string(), env::var(PLUGINS).unwrap_or_default());
             let others: Vec<&str> = others.split(':').filter(|d| !d.is_empty() && *d != dir).collect();
             all.push(format!("{PLUGINS}={}", others.into_iter().chain([dir.as_str()]).collect::<Vec<_>>().join(":")));
+        }
+        // one of the user's own stays
+        if env::var(OPENCODE).is_err() && let Some(config) = agent::opencode() {
+            all.push(format!("{OPENCODE}={config}"));
         }
         all
     }
@@ -567,6 +574,11 @@ pub struct Pane {
     pub cmd: String,
     /// what its agent said, and when
     pub agent: Option<(Agent, u64)>,
+    /// its mark as it is, and the title of its terminal
+    pub mark: String,
+    pub title: String,
+    /// no program but the shell
+    pub shell: bool,
     /// when its window last printed something: its own only while it is hidden
     pub activity: u64,
 }
@@ -596,17 +608,17 @@ pub fn foremost<'a>(tabs: impl Iterator<Item = &'a Pane>) -> Option<&'a Pane> {
 }
 
 pub fn panes() -> Vec<Pane> {
-    let f = "#{pane_id}\t#{@orcux}\t#{@orcux_tab}\t#{@orcux_on}\t#{@orcux_busy}\t#{pane_current_command}\t#{@orcux_state}\t#{window_activity}";
+    let f = "#{pane_id}\t#{@orcux}\t#{@orcux_tab}\t#{@orcux_on}\t#{@orcux_busy}\t#{pane_current_command}\t#{@orcux_state}\t#{window_activity}\t#{pane_title}";
     tmux(&["list-panes", "-a", "-F", f]).unwrap_or_default().lines()
         .map(|l| {
             let mut p = l.split('\t').map(String::from);
             let mut next = || p.next().unwrap_or_default();
             let (pane, wt, tab, on, busy, cmd) = (next(), next(), next().parse().unwrap_or(1), next() == "1", next() == "1", next());
             // back in the shell: the agent is gone, whatever it said last
-            let shell = ["zsh", "bash", "fish", "sh", "nu"].contains(&cmd.trim_start_matches('-'));
-            let (state, activity) = (next(), next().parse().unwrap_or(0));
-            let agent = if shell { None } else { Agent::parse(&state) };
-            Pane { pane, wt, tab, on, busy, cmd, agent, activity }
+            let shell = ["zsh", "bash", "fish", "sh", "dash", "ksh", "nu"].contains(&cmd.trim_start_matches('-'));
+            let (mark, activity, title) = (next(), next().parse().unwrap_or(0), next());
+            let agent = if shell { None } else { Agent::parse(&mark) };
+            Pane { pane, wt, tab, on, busy, cmd, agent, mark, title, shell, activity }
         })
         .filter(|p| !p.wt.is_empty())
         .collect()
@@ -854,6 +866,7 @@ pub fn style_ui() -> Res<()> {
         (&["å", "M-a"], tab("prev")),
         (&["∂", "M-d"], tab("next")),
         (&["œ", "M-q"], close),
+        (&["®", "M-r"], format!("run-shell -b \"'{}' next >/dev/null 2>&1 || true\"", exe.display())),
     ] {
         for k in keys {
             tmux(&["bind-key", "-n", k, "if-shell", "-F", "#{==:#{session_name},orcux}", &cmd, &format!("send-keys {k}")]).ok();
@@ -1089,16 +1102,29 @@ fn flag<'a>(a: &[&'a str], f: &str) -> Option<&'a str> {
 
 fn cli(a: &[&str]) -> Res<()> {
     // what a person waits for: a dozen questions to tmux, through one connection
-    if matches!(a, ["show", ..] | ["tab", ..] | ["switch"] | ["dialog", ..]) {
+    if matches!(a, ["show", ..] | ["tab", ..] | ["switch"] | ["next"] | ["dialog", ..]) {
         control::borrow();
     }
     match a {
         [] => attach(),
         ["sidebar"] => tui::run(),
-        ["hook", event] => {
-            agent::hook(event);
+        ["hook", event, rest @ ..] => {
+            agent::hook(event, rest == ["exact"]);
             Ok(())
         }
+        ["run", rest @ ..] => work::run_task(rest),
+        ["agents", rest @ ..] => work::agents_cmd(rest),
+        ["wait", rest @ ..] => std::process::exit(work::wait(rest)?),
+        ["next"] => work::next(),
+        ["skill"] => {
+            print!("{}", agent::SKILL);
+            Ok(())
+        }
+        ["notify"] => {
+            println!("{} ({})", work::notify_mode(), work::NOTIFY.join(", "));
+            Ok(())
+        }
+        ["notify", mode] if work::NOTIFY.contains(mode) => work::set_notify(mode),
         ["rail"] => tui::rail(),
         ["welcome"] => tui::welcome(),
         ["prs"] => prs::print(),
@@ -1153,14 +1179,8 @@ fn cli(a: &[&str]) -> Res<()> {
             println!("{}", (text.lang_now)(code, &i18n::codes()));
             restart_panes()
         }
-        ["ls"] => {
-            let live: Vec<String> = panes().into_iter().map(|p| p.wt).collect();
-            for w in load() {
-                let st = if live.contains(&w.id()) { "up" } else { "-" };
-                println!("{:<40} :{:<6} {:<3} {}", w.id(), w.port(), st, w.path().display());
-            }
-            Ok(())
-        }
+        ["ls"] => work::ls(false),
+        ["ls", "--json"] => work::ls(true),
         ["show", q] => {
             let (w, n) = target(q)?;
             show_tab(&w, n)
@@ -1198,7 +1218,12 @@ fn cli(a: &[&str]) -> Res<()> {
             Ok(())
         }
         ["env", rest @ ..] => {
-            find(rest.first().copied())?.env().iter().for_each(|e| println!("export {e}"));
+            // quoted: one of them is JSON
+            for e in find(rest.first().copied())?.env() {
+                let (k, v) = e.split_once('=').unwrap_or((&e, ""));
+                let plain = v.chars().all(|c| c.is_ascii_alphanumeric() || "/._:-@+".contains(c));
+                println!("export {k}={}", if plain { v.into() } else { format!("'{}'", v.replace('\'', "'\\''")) });
+            }
             Ok(())
         }
         ["repo", "rm", rest @ ..] => {

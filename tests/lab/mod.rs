@@ -84,7 +84,7 @@ impl Drop for Lab {
     }
 }
 
-fn write_exe(path: &Path, text: &str) {
+pub fn write_exe(path: &Path, text: &str) {
     use std::os::unix::fs::PermissionsExt;
     fs::write(path, text).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();

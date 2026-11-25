@@ -282,6 +282,9 @@ struct App {
     msg: String,
     /// what is known of each terminal's screen
     seen: HashMap<String, Seen>,
+    /// the last mark of each terminal that was told to the person
+    told: HashMap<String, u64>,
+    started: bool,
     /// to notice that the clock jumped or the computer slept
     clock: (Instant, u64),
     wts: Vec<Wt>,
@@ -334,11 +337,14 @@ impl App {
         let now = prs::now();
         let jumped = now.saturating_sub(self.clock.1) > self.clock.0.elapsed().as_secs() + 5;
         self.clock = (Instant::now(), now);
+        let mode = work::notify_mode();
         for mut p in panes() {
             if p.wt == SIDEBAR || p.wt == RAIL {
                 continue;
             }
             let visible = front.as_ref() == Some(&p.pane);
+            agent::follow(&mut p);
+            let exact = p.mark.split(' ').nth(2).is_some();
             let s = self.seen.entry(p.pane.clone()).or_insert_with(|| Seen { visible, ..Seen::default() });
             if jumped {
                 (s.since, s.moved) = (now, s.moved.map(|_| now));
@@ -357,7 +363,7 @@ impl App {
             let hidden = quiet(if working { p.activity.max(s.since) } else { p.activity });
             let moved = !visible && asks.is_some_and(|(_, at)| hidden + 2 < quiet(at));
             let unseen = asks.is_some_and(|(_, at)| s.dialog != at);
-            let look = if visible { p.agent.is_none() || working || asks.is_some() } else { moved || unseen };
+            let look = !exact && if visible { p.agent.is_none() || working || asks.is_some() } else { moved || unseen };
             let text = look.then(|| tmux(&["capture-pane", "-p", "-t", &p.pane]).ok()).flatten();
             if visible && let Some(text) = &text {
                 let mut h = DefaultHasher::new();
@@ -373,17 +379,22 @@ impl App {
             }
             let still = if visible { s.moved.map(quiet) } else { Some(hidden) };
             let dialog = asks.is_some_and(|(_, at)| s.dialog == at);
-            let (busy, new) = agent::settle(p.agent, &Screen { still, text, dialog, visible: visible && watched }, now);
+            let (busy, new) = agent::settle(p.agent, exact, &Screen { still, text, dialog, visible: visible && watched }, now);
             p.busy = busy;
-            if let (Some(was), Some(new)) = (p.agent, new) {
-                agent::replace(&p.pane, was, new);
+            if let (Some(_), Some(new)) = (p.agent, new) {
+                agent::replace(&p, new);
                 p.agent = Some((new, now));
             }
             if self.busy.insert(p.pane.clone(), p.busy) != Some(p.busy) {
                 set_busy(&p.pane, p.busy);
             }
+            // told once, and only if it is not in front of the person; those that were there at the start are known
+            if let Some((a, at)) = p.agent && self.told.insert(p.pane.clone(), at) != Some(at) && self.started && !(visible && watched) && work::worth(a, &mode) {
+                work::notify(&p.wt, a.text());
+            }
             self.live.entry(p.wt.clone()).or_default().push(p);
         }
+        self.started = true;
         self.heal(&wts);
         let bar = tab_bar();
         if self.bar != bar {
@@ -649,7 +660,7 @@ pub fn run() -> Res<()> {
         }
     });
     let mut app = App {
-        rows: vec![], sel: 1, msg: String::new(), seen: HashMap::new(), clock: (Instant::now(), prs::now()), live: HashMap::new(),
+        rows: vec![], sel: 1, msg: String::new(), seen: HashMap::new(), told: HashMap::new(), started: false, clock: (Instant::now(), prs::now()), live: HashMap::new(),
         prs: Cache::default(), active: true, status: Default::default(), busy: HashMap::new(),
         visible: String::new(), missing: false, bar: String::new(), wts: vec![],
     };
@@ -693,6 +704,7 @@ pub fn run() -> Res<()> {
             KeyCode::Char('p') => if let Err(e) = toggle_rail() {
                 app.error(&e);
             },
+            KeyCode::Char('r') => { work::next().ok(); } // nobody waits: stay
             KeyCode::Tab => { focus(RAIL).ok(); }
             KeyCode::Char('N') => if let Some(Row::Wt(w, _)) = app.selected() {
                 let id = w.id();
@@ -1800,7 +1812,7 @@ mod tests {
         // both are drawn on the row of a worktree
         let pr = [State::Failed, State::Waiting, State::Done].map(|s| look(s).0);
         for a in [Agent::Question, Agent::Permission, Agent::Failed, Agent::Done] {
-            let p = Pane { pane: "%1".into(), wt: "r/w".into(), tab: 1, on: true, busy: false, cmd: "claude".into(), agent: Some((a, 0)), activity: 0 };
+            let p = Pane { pane: "%1".into(), wt: "r/w".into(), tab: 1, on: true, busy: false, cmd: "claude".into(), agent: Some((a, 0)), mark: String::new(), title: String::new(), shell: false, activity: 0 };
             assert!(!pr.contains(&look(p.look()).0), "{a:?}");
         }
     }

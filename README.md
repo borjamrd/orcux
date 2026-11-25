@@ -5,10 +5,10 @@ Git worktrees, ports and terminals for several coding agents at once, in the ter
 ![orcux: worktrees on the left, the terminal of an agent in the middle, pull requests on the right](docs/demo.gif)
 
 - **A worktree per task.** One key creates the branch, the folder, the terminal and a block of 100 ports of its own.
-- **You see who needs you.** Claude Code agents tell when they work (`●`), ask or need permission (`?`), fail (`!`) or are done (`■`). Nothing in your settings is changed.
+- **You see who needs you.** Agents tell when they work (`●`), ask or need permission (`?`), fail (`!`) or are done (`■`), the system notifies you, and one key takes you there. Nothing in your settings is changed.
 - **Agents go on without you.** tmux runs the terminals: close orcux, or lose the connection, and come back.
 - **Your pull requests beside them**, read-only: whose turn it is, what fails, and a key to hand it to the agent.
-- **A CLI that agents use too**: create worktrees, type into a terminal, read it.
+- **Agents that hand over work.** A CLI and a skill: an agent can start others in worktrees of their own, wait for them and read what they did.
 - **Fast.** One binary of about 1 MB. With 50 terminals at rest it starts no processes and uses about 0.1 % of a core per pane.
 
 ## Install
@@ -39,6 +39,7 @@ Press `n` to create a worktree, `⏎` to open it, and start your agent there. `?
 | `n` / `N` | new worktree / new one from the selected one |
 | `⏎` | open the selected worktree |
 | `Opt+w` | switch worktree, by name or pull request |
+| `Opt+r` | go to the agent that waits for you |
 | `Opt+t`, `Opt+a`, `Opt+d`, `Opt+q` | new, previous, next and close tab |
 | `tab` | go to the pull requests |
 | `q` | leave; the terminals stay alive |
@@ -46,14 +47,30 @@ Press `n` to create a worktree, `⏎` to open it, and start your agent there. `?
 ## For agents and scripts
 
 ```sh
-orcux new fix-login --cmd claude      # worktree, ports and terminal
-orcux send fix-login "run the tests"  # types it, with Enter
-orcux read fix-login 40               # the end of its terminal
-orcux ls
-orcux rm fix-login                    # keeps the branch
+orcux run "fix the login redirect, with a test"  # worktree, ports, and an agent at that task
+orcux wait fix-the-login-redirect --timeout 600  # until it stops working
+orcux read fix-the-login-redirect 40             # the end of its terminal
+orcux send fix-the-login-redirect "go on"        # types it, with Enter
+orcux ls --json                                  # every worktree and what its agents do
+orcux rm fix-the-login-redirect                  # keeps the branch
 ```
 
-Several can run at once. `orcux help` lists every command.
+`wait` ends with 0 when the agent is done, 2 when it asks something or needs permission, 3 when it failed, 4 on timeout and 5 when there is no agent. Several commands can run at once. `orcux help` lists them all.
+
+Claude Code agents get this as a skill in the terminals of orcux. For others, `orcux skill` prints it.
+
+## Agents
+
+`orcux run` knows Claude Code, Codex, Gemini CLI, OpenCode and Cursor. `orcux agents` lists them, `orcux agents use codex` changes the default and `orcux agents set mine "my-agent --task {prompt}"` adds or replaces one.
+
+| What they do is known | |
+| --- | --- |
+| Claude Code | from its hooks |
+| OpenCode | from a plugin, exactly |
+| Gemini CLI, Codex | from the title of their terminal, as documented; not tested with the real ones yet |
+| others | only whether their screen moves |
+
+`orcux notify off` turns notifications off; `all` also tells when an agent is done.
 
 ## Ports
 
@@ -70,6 +87,10 @@ Use them in your scripts: `vite --port $ORCUX_PORT`. Files that git ignores and 
 ## Languages
 
 English and Spanish, after your system or with `orcux lang`.
+
+## License
+
+[MIT](LICENSE)
 
 ## Development
 
