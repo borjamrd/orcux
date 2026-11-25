@@ -9,6 +9,7 @@ pub static EN: Text = Text {
             ("N", "new child worktree: from the branch of the selected"),
             ("d", "delete the selected worktree"),
             ("t", "new tab in the selected worktree"),
+            ("space", "fold or unfold a folder or a repo"),
             ("h / l, ← / →", "previous / next tab"),
             ("j / k, ↓ / ↑", "move along the list"),
             ("p", "show or hide the PR panel"),

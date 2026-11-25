@@ -720,6 +720,43 @@ pub fn popup(title: &str, want: (u32, u32), args: &[&str]) -> Res<()> {
     tmux(&a).map(|_| ())
 }
 
+/// Folders and repos that the user folded in the sidebar.
+pub fn folded() -> Vec<PathBuf> {
+    fs::read_to_string(state_dir().join("folded")).unwrap_or_default().lines().map(PathBuf::from).collect()
+}
+
+pub fn toggle_fold(p: &Path) {
+    let mut f = folded();
+    match f.iter().position(|x| x == p) {
+        Some(i) => { f.remove(i); }
+        None => f.push(p.into()),
+    }
+    let s: String = f.iter().map(|p| format!("{}\n", p.display())).collect();
+    fs::write(state_dir().join("folded"), s).ok();
+}
+
+/// Repos by the folder they are in, both in order of appearance, with a name for each folder: its last part, or the
+/// last two if another one ends the same.
+pub fn by_folder(repos: &[PathBuf]) -> Vec<(PathBuf, String, Vec<PathBuf>)> {
+    let mut groups: Vec<(PathBuf, Vec<PathBuf>)> = vec![];
+    for r in repos {
+        let dir = r.parent().unwrap_or(r).to_path_buf();
+        match groups.iter_mut().find(|g| g.0 == dir) {
+            Some(g) => g.1.push(r.clone()),
+            None => groups.push((dir, vec![r.clone()])),
+        }
+    }
+    let last = |p: &Path, n: usize| {
+        let parts: Vec<_> = p.iter().collect();
+        parts[parts.len().saturating_sub(n)..].iter().map(|s| s.to_string_lossy()).collect::<Vec<_>>().join("/")
+    };
+    let names: Vec<String> = groups.iter().map(|g| last(&g.0, 1)).collect();
+    groups.iter().zip(&names).map(|((dir, repos), name)| {
+        let name = if *dir == home() { "~".into() } else if names.iter().filter(|n| *n == name).count() > 1 { last(dir, 2) } else { name.clone() };
+        (dir.clone(), name, repos.clone())
+    }).collect()
+}
+
 fn recent() -> Vec<String> {
     fs::read_to_string(state_dir().join("recent")).unwrap_or_default().lines().map(String::from).collect()
 }
@@ -980,6 +1017,14 @@ fn cli(a: &[&str]) -> Res<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folders() {
+        let p = |l: &[&str]| l.iter().map(PathBuf::from).collect::<Vec<_>>();
+        let got = by_folder(&p(&["/w/fever/a", "/w/own/b", "/w/fever/c", "/z/own/d"]));
+        let names: Vec<(&str, usize)> = got.iter().map(|g| (g.1.as_str(), g.2.len())).collect();
+        assert_eq!(names, [("fever", 2), ("w/own", 1), ("z/own", 1)]);
+    }
 
     #[test]
     fn trees() {

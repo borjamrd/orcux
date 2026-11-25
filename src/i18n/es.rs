@@ -9,6 +9,7 @@ pub static ES: Text = Text {
             ("N", "nuevo worktree hijo: sale de la rama del seleccionado"),
             ("d", "borrar el worktree seleccionado"),
             ("t", "nueva pestaña en el worktree seleccionado"),
+            ("espacio", "plegar o desplegar una carpeta o un repo"),
             ("h / l, ← / →", "pestaña anterior / siguiente"),
             ("j / k, ↓ / ↑", "moverse por la lista"),
             ("p", "mostrar u ocultar el panel de PRs"),

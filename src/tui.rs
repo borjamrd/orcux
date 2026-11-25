@@ -127,7 +127,10 @@ fn active() -> bool {
 }
 
 enum Row {
-    Repo(PathBuf),
+    /// where some repos are, its name and how many they are
+    Folder(PathBuf, String, usize),
+    /// and how many worktrees it has
+    Repo(PathBuf, usize),
     /// and whether it is the last of its siblings, at every level
     Wt(Wt, Vec<bool>),
 }
@@ -157,11 +160,26 @@ struct App {
 impl App {
     fn refresh(&mut self) {
         let wts = load();
+        let key = |r: &Row| match r {
+            Row::Folder(p, ..) | Row::Repo(p, _) => p.to_string_lossy().to_string(),
+            Row::Wt(w, _) => w.id(),
+        };
+        let was = self.selected().map(key);
         self.rows.clear();
-        for r in repos() {
-            self.rows.push(Row::Repo(r.clone()));
-            let of: Vec<&Wt> = wts.iter().filter(|w| w.repo == r).collect();
-            self.rows.extend(tree(&of).into_iter().map(|(w, trail)| Row::Wt(w, trail)));
+        let (folded, folders) = (folded(), by_folder(&repos()));
+        let many = folders.len() > 1;
+        for (dir, name, repos) in folders {
+            if many {
+                self.rows.push(Row::Folder(dir.clone(), name, repos.len()));
+                if folded.contains(&dir) {
+                    continue;
+                }
+            }
+            self.add_repos(&repos, &wts, &folded);
+        }
+        // the same row stays selected when others come and go
+        if let Some(i) = was.and_then(|k| self.rows.iter().position(|r| key(r) == k)) {
+            self.sel = i;
         }
         self.sel = self.sel.min(self.rows.len().saturating_sub(1));
         self.live.clear();
@@ -245,9 +263,35 @@ impl App {
 
     fn repo_of_selected(&self) -> Option<PathBuf> {
         match self.selected()? {
-            Row::Repo(p) => Some(p.clone()),
+            Row::Folder(..) => None,
+            Row::Repo(p, _) => Some(p.clone()),
             Row::Wt(w, _) => Some(w.repo.clone()),
         }
+    }
+
+    fn add_repos(&mut self, repos: &[PathBuf], wts: &[Wt], folded: &[PathBuf]) {
+        for r in repos {
+            let of: Vec<&Wt> = wts.iter().filter(|w| w.repo == *r).collect();
+            self.rows.push(Row::Repo(r.clone(), of.len()));
+            if !folded.contains(r) {
+                self.rows.extend(tree(&of).into_iter().map(|(w, trail)| Row::Wt(w, trail)));
+            }
+        }
+    }
+
+    /// What is going on in some repos, for when they are folded: how many work and how many PRs need the user.
+    fn summary<'a>(&self, within: impl Fn(&Path) -> bool, working: bool) -> Vec<Span<'a>> {
+        let mut out = vec![];
+        let yours = self.prs.prs.iter().filter(|x| within(&x.path) && x.status().0 == Group::Yours).count();
+        if yours > 0 {
+            out.push(fg(format!(" ◆ {yours}"), SIGNAL));
+        }
+        let busy = if working { load().iter().filter(|w| within(&w.repo) && self.working(&w.id())).count() } else { 0 };
+        if busy > 0 {
+            out.push(fg(format!(" ● {busy}"), CURRENT));
+        }
+        out.push(" ".into());
+        out
     }
 
     /// One line, hung from its repo; the selected one also tells how it is and its port.
@@ -284,21 +328,20 @@ impl App {
         lines
     }
 
-    fn repo_line<'a>(&self, p: &Path, width: u16, wts: usize) -> Line<'a> {
+    fn repo_line<'a>(&self, p: &Path, width: u16, wts: usize, folded: bool) -> Line<'a> {
         let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
         let initial = name.chars().next().unwrap_or('?').to_uppercase().to_string();
         let mut h = DefaultHasher::new();
         name.hash(&mut h);
         let color = if wts > 0 { Color::from_u32(theme::BADGES[h.finish() as usize % theme::BADGES.len()]) } else { WAKE };
         let ink = if wts > 0 { ABYSS } else { MUTED };
-        let yours = self.prs.prs.iter().filter(|x| x.path == p && x.status().0 == Group::Yours).count();
-        let right = if yours > 0 { vec![fg(format!(" ◆ {yours} "), SIGNAL)] } else { vec![" ".into()] };
+        let right = self.summary(|x| x == p, folded);
         let end = |s: &'static str| if s.is_empty() { Span::raw(" ").bg(color) } else { fg(s, color) };
         let (open, close) = theme::caps().unwrap_or_default();
         let mut left = vec![end(open), initial.bold().fg(ink).bg(color), end(close), " ".into()];
         left.push(if wts > 0 { name.bold().fg(FOAM) } else { fg(name, MUTED) });
         if wts > 0 {
-            left.push(fg(format!("  {wts}"), MUTED));
+            left.push(fg(format!("  {wts}{}", if folded { " ▸" } else { "" }), MUTED));
         }
         lr(width, left, right)
     }
@@ -312,12 +355,21 @@ impl App {
         for (i, r) in self.rows.iter().enumerate() {
             let sel = i == self.sel;
             match r {
-                Row::Repo(p) => {
-                    let wts = (i + 1..).take_while(|j| is_wt(*j)).count();
-                    if i > 0 && (is_wt(i - 1) || wts > 0) {
+                Row::Folder(p, name, n) => {
+                    if i > 0 {
                         items.push((vec![Line::default()], false));
                     }
-                    items.push((vec![self.repo_line(p, w, wts)], sel));
+                    let open = matches!(self.rows.get(i + 1), Some(Row::Repo(r, _)) if r.parent() == Some(p));
+                    let right = if open { vec![" ".into()] } else { self.summary(|x| x.parent() == Some(p), true) };
+                    let left = vec![fg(if open { " ▾ " } else { " ▸ " }, MUTED), fg(name.clone(), MUTED), fg(if open { String::new() } else { format!("  {n}") }, LINE)];
+                    items.push((vec![lr(w, left, right)], sel));
+                }
+                Row::Repo(p, wts) => {
+                    let after_folder = i > 0 && matches!(self.rows[i - 1], Row::Folder(..));
+                    if i > 0 && !after_folder && (is_wt(i - 1) || is_wt(i + 1)) {
+                        items.push((vec![Line::default()], false));
+                    }
+                    items.push((vec![self.repo_line(p, w, *wts, *wts > 0 && !is_wt(i + 1))], sel));
                 }
                 Row::Wt(wt, trail) => items.push((self.wt_lines(wt, w, trail, sel), sel)),
             }
@@ -429,11 +481,15 @@ pub fn run() -> Res<()> {
             KeyCode::Char('l') | KeyCode::Right => { step_tab(true).ok(); }
             KeyCode::Char('n') => match app.repo_of_selected() {
                 Some(r) => app.popup(tr().title_new, DIALOG, &["dialog", "new", &r.to_string_lossy()]),
-                None => app.error(tr().no_repos),
+                None if app.rows.is_empty() => app.error(tr().no_repos),
+                None => {}
             },
             KeyCode::Char('A') => {
                 // new folders and clones go beside the selected repo
-                let base = app.repo_of_selected().and_then(|r| Some(r.parent()?.to_path_buf())).unwrap_or_else(home);
+                let base = match app.selected() {
+                    Some(Row::Folder(p, ..)) => p.clone(),
+                    _ => app.repo_of_selected().and_then(|r| Some(r.parent()?.to_path_buf())).unwrap_or_else(home),
+                };
                 app.popup(tr().title_add, (76, 11), &["dialog", "add", &base.to_string_lossy()]);
             }
             KeyCode::Char('d') => match app.selected() {
@@ -441,16 +497,21 @@ pub fn run() -> Res<()> {
                     let (id, title) = (w.id(), if w.at.is_some() { tr().title_unregister } else { tr().title_rm });
                     app.popup(title, DIALOG, &["dialog", "rm", &id]);
                 }
-                Some(Row::Repo(r)) => {
+                Some(Row::Repo(r, _)) => {
                     let r = r.to_string_lossy().to_string();
                     app.popup(tr().title_unregister, DIALOG, &["dialog", "rmrepo", &r]);
                 }
-                None => {}
+                _ => {}
             },
-            KeyCode::Enter => if let Some(Row::Wt(w, _)) = app.selected() {
-                if let Err(e) = show(&w.clone()) {
-                    app.error(&e);
+            KeyCode::Enter | KeyCode::Char(' ') => match app.selected() {
+                Some(Row::Folder(p, ..) | Row::Repo(p, _)) => {
+                    toggle_fold(&p.clone());
+                    app.refresh();
                 }
+                Some(Row::Wt(w, _)) if k == KeyCode::Enter => if let Err(e) = show(&w.clone()) {
+                    app.error(&e);
+                },
+                _ => {}
             },
             _ => {}
         }
