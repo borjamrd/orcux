@@ -4,6 +4,8 @@ name: Release
 on:
   push:
     tags: ['v*']
+    branches: ['**'] # a change here is tried before it is needed: only the builds
+    paths: [.github/workflows/release.yml]
   workflow_dispatch:
 
 permissions:
