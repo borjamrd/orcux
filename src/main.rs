@@ -1,4 +1,5 @@
 mod agent;
+mod control;
 mod i18n;
 mod mark;
 mod orc;
@@ -7,7 +8,7 @@ mod prs;
 mod theme;
 mod tui;
 
-use std::{env, fs, path::{Path, PathBuf}, process::Command, thread, time::Duration};
+use std::{collections::BTreeMap, env, fs, path::{Path, PathBuf}, process::Command, thread, time::Duration};
 
 use agent::Agent;
 use i18n::tr;
@@ -63,8 +64,29 @@ impl Wt {
         home().join("orcux").join(self.repo_name()).join(&self.name)
     }
     /// The branch it has checked out now (an imported one is not named after it). Read from git's files: this
-    /// runs for every worktree on every redraw.
+    /// runs for every worktree on every redraw. Read again after a few seconds.
     pub fn branch(&self) -> Option<String> {
+        self.seen().1
+    }
+    /// Its folder is not there.
+    pub fn gone(&self) -> bool {
+        self.seen().0
+    }
+    fn seen(&self) -> (bool, Option<String>) {
+        type Seen = (std::time::Instant, (bool, Option<String>));
+        static SEEN: std::sync::Mutex<BTreeMap<PathBuf, Seen>> = std::sync::Mutex::new(BTreeMap::new());
+        let path = self.path();
+        let Ok(mut all) = SEEN.lock() else { return (!path.exists(), self.read_branch()) };
+        match all.get(&path) {
+            Some((at, what)) if at.elapsed().as_secs() < 4 => what.clone(),
+            _ => {
+                let what = (!path.exists(), self.read_branch());
+                all.insert(path, (std::time::Instant::now(), what.clone()));
+                what
+            }
+        }
+    }
+    fn read_branch(&self) -> Option<String> {
         let link = fs::read_to_string(self.path().join(".git")).ok()?;
         let dir = self.path().join(link.strip_prefix("gitdir:")?.trim());
         let head = fs::read_to_string(dir.join("HEAD")).ok()?;
@@ -116,7 +138,25 @@ fn run(cmd: &str, args: &[&str], cwd: Option<&Path>) -> Res<String> {
 }
 
 pub fn tmux(args: &[&str]) -> Res<String> {
-    run("tmux", args, None)
+    control::command(args).unwrap_or_else(|| run("tmux", args, None))
+}
+
+/// The client of the person, with its size: the connections of `control` are clients too.
+pub fn viewer() -> Option<(String, u32, u32)> {
+    let f = "#{client_control_mode}\t#{client_activity}\t#{client_name}\t#{client_width}\t#{client_height}";
+    let all = tmux(&["list-clients", "-t", UI, "-F", f]).ok()?;
+    let people = all.lines().filter_map(|l| {
+        let [control, at, name, w, h] = l.split('\t').collect::<Vec<_>>()[..] else { return None };
+        (control != "1").then(|| Some((at.parse::<u64>().ok()?, name.to_string(), w.parse().ok()?, h.parse().ok()?)))?
+    });
+    people.max_by_key(|c| c.0).map(|(_, name, w, h)| (name, w, h))
+}
+
+pub fn detach() -> Res<()> {
+    match viewer() {
+        Some((name, ..)) => tmux(&["detach-client", "-t", &name]).map(|_| ()),
+        None => Ok(()),
+    }
 }
 
 pub fn git(dir: &Path, args: &[&str]) -> Res<String> {
@@ -434,6 +474,8 @@ pub struct Pane {
     pub cmd: String,
     /// what its agent said, and when
     pub agent: Option<(Agent, u64)>,
+    /// when its window last printed something: its own only while it is hidden
+    pub activity: u64,
 }
 
 impl Pane {
@@ -461,7 +503,7 @@ pub fn foremost<'a>(tabs: impl Iterator<Item = &'a Pane>) -> Option<&'a Pane> {
 }
 
 pub fn panes() -> Vec<Pane> {
-    let f = "#{pane_id}\t#{@orcux}\t#{@orcux_tab}\t#{@orcux_on}\t#{@orcux_busy}\t#{pane_current_command}\t#{@orcux_state}";
+    let f = "#{pane_id}\t#{@orcux}\t#{@orcux_tab}\t#{@orcux_on}\t#{@orcux_busy}\t#{pane_current_command}\t#{@orcux_state}\t#{window_activity}";
     tmux(&["list-panes", "-a", "-F", f]).unwrap_or_default().lines()
         .map(|l| {
             let mut p = l.split('\t').map(String::from);
@@ -469,8 +511,9 @@ pub fn panes() -> Vec<Pane> {
             let (pane, wt, tab, on, busy, cmd) = (next(), next(), next().parse().unwrap_or(1), next() == "1", next() == "1", next());
             // back in the shell: the agent is gone, whatever it said last
             let shell = ["zsh", "bash", "fish", "sh", "nu"].contains(&cmd.trim_start_matches('-'));
-            let agent = if shell { None } else { Agent::parse(&next()) };
-            Pane { pane, wt, tab, on, busy, cmd, agent }
+            let (state, activity) = (next(), next().parse().unwrap_or(0));
+            let agent = if shell { None } else { Agent::parse(&state) };
+            Pane { pane, wt, tab, on, busy, cmd, agent, activity }
         })
         .filter(|p| !p.wt.is_empty())
         .collect()
@@ -660,6 +703,7 @@ impl Binary {
 /// Becomes the new version of itself. Only returns if it could not.
 pub fn restart_self() -> String {
     use std::os::unix::process::CommandExt;
+    control::close();
     match env::current_exe() {
         Ok(exe) => Command::new(exe).args(env::args().skip(1)).exec().to_string(),
         Err(e) => e.to_string(),
@@ -756,12 +800,10 @@ pub fn show_tab(w: &Wt, tab: Option<u32>) -> Res<()> {
 pub fn popup(title: &str, want: (u32, u32), args: &[&str]) -> Res<()> {
     let exe = env::current_exe().map_err(|e| e.to_string())?;
     // tmux rejects a popup larger than the client instead of clamping it
-    let size = tmux(&["display-message", "-p", "#{client_width} #{client_height}"])?;
-    let (w, h) = size.split_once(' ').unwrap_or_default();
-    let fit = |have: &str, want: u32| have.parse().map_or(want, |n: u32| n.min(want)).to_string();
-    let (w, h, title) = (fit(w, want.0), fit(h, want.1), format!("#[fg={}] {title} ", hex(theme::FOAM)));
+    let (client, w, h) = viewer().ok_or(tr().no_pane)?;
+    let (w, h, title) = (w.min(want.0).to_string(), h.min(want.1).to_string(), format!("#[fg={}] {title} ", hex(theme::FOAM)));
     let (style, edge) = (format!("bg={},fg={}", hex(theme::HULL), hex(theme::FOAM)), format!("bg={},fg={}", hex(theme::HULL), hex(theme::LINE)));
-    let mut a = vec!["display-popup", "-E", "-b", "rounded", "-s", &style, "-S", &edge, "-T", &title, "-w", &w, "-h", &h, exe.to_str().ok_or(tr().non_utf8)?];
+    let mut a = vec!["display-popup", "-c", &client, "-E", "-b", "rounded", "-s", &style, "-S", &edge, "-T", &title, "-w", &w, "-h", &h, exe.to_str().ok_or(tr().non_utf8)?];
     a.extend(args); // several args = exec without a shell, so no quoting
     tmux(&a).map(|_| ())
 }
