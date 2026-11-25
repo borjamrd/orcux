@@ -58,13 +58,17 @@ Model:
 Isolated HOME and tmux server. The tmux socket has a ~104-char limit on macOS, so `TMUX_TMPDIR` must be short (e.g. `~/.cache/orcux-test`, deleted at the end):
 
 ```sh
-export HOME=$(mktemp -d) TMUX_TMPDIR=~/.cache/orcux-test; unset TMUX   # in a subshell
+unset TMUX TMUX_PANE                       # FIRST, in a subshell: see below
+export TMUX_TMPDIR=~/.cache/orcux-test; mkdir -p $TMUX_TMPDIR; export HOME=$(mktemp -d)
+case $(tmux display-message -p '#{socket_path}' 2>/dev/null) in ""|*orcux-test*) ;; *) echo 'real tmux server: stop'; exit 1;; esac
 git init -q demo && cd demo && echo hi > a && git add a && git -c user.name=t -c user.email=t@t commit -qm i
 orcux new feat-a && orcux send feat-a 'echo $ORCUX_PORT' && sleep 1 && orcux read feat-a 3
 orcux show feat-a && tmux capture-pane -p -t "$(tmux list-panes -t =orcux: -F '#{pane_id} #{@orcux}' | awk '$2=="__sidebar"{print $1}')"
 tmux send-keys -t <sidebar_pane> n; tmux send-keys -t <sidebar_pane> -l feat-b; tmux send-keys -t <sidebar_pane> Enter
 tmux kill-server; rm -rf ~/.cache/orcux-test
 ```
+
+**Never run `tmux kill-server` before `unset TMUX`.** Inside tmux (an agent running in orcux), `$TMUX` wins over `TMUX_TMPDIR`, and so does the default socket if the `TMUX_TMPDIR` folder does not exist: on 2026-11-25 a test killed the user's real server and every terminal in it.
 
 ## Known pending items (not done on purpose)
 
