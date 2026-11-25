@@ -13,7 +13,7 @@ Git worktrees, ports and terminals for several coding agents at once, in the ter
 
 ## Install
 
-You need [tmux](https://github.com/tmux/tmux) 3.3 or later (3.6 looks best) and git 2.38 or later. [gh](https://cli.github.com) is optional: it shows your pull requests.
+You need [tmux](https://github.com/tmux/tmux) 3.6 and git 2.38, or later. tmux 3.3 to 3.5 should work, with lines between panes; it is not tested. [gh](https://cli.github.com) is optional: it shows your pull requests.
 
 From the source:
 
