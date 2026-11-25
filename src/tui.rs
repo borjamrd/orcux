@@ -390,8 +390,13 @@ impl App {
 
     fn draw(&self, f: &mut Frame) {
         f.render_widget(Block::new().style(Style::new().bg(ABYSS).fg(FOAM)), f.area());
-        let [_, list, _, foot] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1), Constraint::Length(2)]).areas(f.area());
         let w = f.area().width;
+        let logo = f.area().height >= logo::FROM && w >= logo::W + 2;
+        let head = if logo { logo::H + 1 } else { 1 };
+        let [head, list, _, foot] = Layout::vertical([Constraint::Length(head), Constraint::Fill(1), Constraint::Length(1), Constraint::Length(2)]).areas(f.area());
+        if logo {
+            f.render_widget(Paragraph::new(logo::lines()), head.inner(Margin::new(1, 0)));
+        }
         let is_wt = |j: usize| matches!(self.rows.get(j), Some(Row::Wt(..)));
         let mut items = vec![];
         for (i, r) in self.rows.iter().enumerate() {
@@ -505,7 +510,7 @@ pub fn run() -> Res<()> {
             KeyCode::Char('q') => { tmux(&["detach-client"]).ok(); }
             KeyCode::Char('j') | KeyCode::Down => app.sel = (app.sel + 1).min(app.rows.len().saturating_sub(1)),
             KeyCode::Char('k') | KeyCode::Up => app.sel = app.sel.saturating_sub(1),
-            KeyCode::Char('?') => app.popup(tr().title_commands, (148, 34), &["commands"]),
+            KeyCode::Char('?') => app.popup(tr().title_commands, (136, 34), &["commands"]),
             KeyCode::Char('p') => if let Err(e) = toggle_rail() {
                 app.error(&e);
             },
@@ -750,7 +755,7 @@ pub fn rail() -> Res<()> {
             (KeyCode::Char('k') | KeyCode::Up, _) => { sel = sel.saturating_sub(1); Ok(()) }
             (KeyCode::Tab, _) => focus(SIDEBAR),
             (KeyCode::Char('p'), _) => toggle_rail(), // closes this pane
-            (KeyCode::Char('?'), _) => popup(tr().title_commands, (148, 34), &["commands"]),
+            (KeyCode::Char('?'), _) => popup(tr().title_commands, (136, 34), &["commands"]),
             (KeyCode::Char('r'), _) if busy.is_none() => { busy = Some(thread::spawn(|| { prs::refresh().ok(); })); Ok(()) }
             (KeyCode::Char('o'), Some(p)) => open_url(&p.url),
             (KeyCode::Enter, Some(p)) => view(p),
@@ -1201,7 +1206,7 @@ pub fn commands() -> Res<()> {
             // the orc goes beside the list, if there is room for both
             if area.width as usize >= 94 + 2 + orc::W && area.height as usize >= orc::H / 2 + 4 {
                 animated = true;
-                let [list, side] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(orc::W as u16 + 2)]).areas(area);
+                let [side, list] = Layout::horizontal([Constraint::Length(orc::W as u16 + 2), Constraint::Fill(1)]).areas(area);
                 area = list;
                 let tick = (start.elapsed().as_millis() / 120) as usize;
                 let mut art = orc::lines(tick);
@@ -1209,7 +1214,7 @@ pub fn commands() -> Res<()> {
                 let text = tr().orc[tick / 60 % tr().orc.len()];
                 let typed: String = text.chars().take(tick % 60).collect();
                 let cursor = if tick / 4 % 2 == 0 { "▏" } else { " " };
-                art.extend([Line::default(), Line::from(vec![fg("> ", KELP), fg(typed, FOAM), fg(cursor, FOAM)])]);
+                art.extend([Line::default(), Line::from(vec![fg("> ", MUTED), fg(typed, FOAM), fg(cursor, FOAM)])]);
                 f.render_widget(Paragraph::new(art), side.inner(Margin::new(1, 1)));
             }
             let [_, input, _, body, _, foot] = Layout::vertical([

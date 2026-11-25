@@ -1,6 +1,8 @@
 mod agent;
 mod i18n;
+mod logo;
 mod orc;
+mod pixels;
 mod prs;
 mod theme;
 mod tui;
@@ -673,7 +675,9 @@ pub fn style_ui() -> Res<()> {
     }
     let (gap, card) = (format!("bg={abyss},fg={abyss}"), format!("bg={hull}"));
     let rail = format!("#[bg={hull}#,fg={foam}#,bold]  {}  #[default]", tr().your_prs);
-    let name = format!("#[fg={muted}]orcux");
+    // with room for it, the sidebar draws the logo instead
+    let logo = format!("#{{&&:#{{e|>=:#{{pane_height}},{}}},#{{e|>=:#{{pane_width}},{}}}}}", logo::FROM, logo::W + 2);
+    let name = format!("#{{?{logo},,#[fg={muted}]orcux}}");
     let titles = format!("#{{?#{{==:#{{@orcux}},{SIDEBAR}}},{name},#{{?#{{==:#{{@orcux}},{RAIL}}},{rail},#{{@orcux_bar}}}}}}");
     for (k, v) in [
         ("window-status-format", ""),
