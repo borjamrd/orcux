@@ -22,6 +22,75 @@ def line($kind): (.commits.nodes[0].commit.statusCheckRollup // {}) as $c
    ($c.contexts.totalCount // 0)] | @tsv;
 .data | (.mine.nodes[] | line("mine")), (.review.nodes[] | line("review"))"#;
 
+/// GitHub's own summary counts every run, also one that was cancelled and run again, and checks that block nothing.
+/// Out of `contexts.nodes`: the last run of each check, and whether it is "ok", "pending", "fail" or "optional" (it
+/// fails, but the branch requires others). Without required checks, all of them matter.
+const CHECKS_JQ: &str = r#"
+def outcome:
+  if .__typename == "CheckRun" then
+    if .status != "COMPLETED" then "pending"
+    elif (.conclusion as $c | ["FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED", "CANCELLED"] | index($c)) != null then "fail"
+    else "ok" end
+  elif .state == "SUCCESS" then "ok" elif .state == "PENDING" or .state == "EXPECTED" then "pending" else "fail" end;
+def checks:
+  (. // []) | group_by([(.name // .context), (.checkSuite.workflowRun.workflow.name // ""), (.checkSuite.workflowRun.event // "")])
+  | map(max_by(.databaseId // 0)) | any(.[]; .isRequired) as $some
+  | map(. as $n | outcome as $o | {name: ($n.name // $n.context),
+      is: (if $o == "fail" and $some and ($n.isRequired | not) then "optional" else $o end)});
+"#;
+
+/// What CHECKS_JQ needs of each check; `pr` is a number or a variable.
+fn check_fields(pr: &str) -> String {
+    format!("__typename ... on CheckRun{{databaseId name status conclusion isRequired(pullRequestNumber:{pr}) \
+        checkSuite{{workflowRun{{event workflow{{name}}}}}}}} ... on StatusContext{{context state isRequired(pullRequestNumber:{pr})}}")
+}
+
+const RED_JQ: &str = r#"
+.data | to_entries[] | .key as $k | .value.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts
+  | select(. != null and .totalCount <= 100) | (.nodes | checks) as $n
+  | def count($s): [$n[] | select(.is == $s)] | length;
+  [$k, (if count("fail") > 0 then "FAILURE" elif count("pending") > 0 then "PENDING" else "SUCCESS" end),
+   count("ok"), count("fail"), ($n | length)] | @tsv"#;
+
+/// Looks closer at the PRs whose CI GitHub calls red. If it cannot, they stay red.
+fn recheck(lines: Vec<String>, token: Option<&str>) -> Vec<String> {
+    let mut query = String::new();
+    for (i, l) in lines.iter().enumerate() {
+        let f: Vec<&str> = l.split('\t').collect();
+        let [_, repo, number, ..] = f[..] else { continue };
+        let plain = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
+        if let Some((owner, name)) = repo.split_once('/')
+            && matches!(f.get(11), Some(&"FAILURE" | &"ERROR")) && plain(owner) && plain(name) && number.parse::<u32>().is_ok()
+        {
+            let fields = check_fields(number);
+            query += &format!("p{i}:repository(owner:\"{owner}\",name:\"{name}\"){{pullRequest(number:{number}){{commits(last:1){{nodes{{\
+                commit{{statusCheckRollup{{contexts(first:100){{totalCount nodes{{{fields}}}}}}}}}}}}}}}}} ");
+        }
+    }
+    if query.is_empty() {
+        return lines;
+    }
+    match gh(&["api", "graphql", "-f", &format!("query=query{{{query}}}"), "--jq", &format!("{CHECKS_JQ}{RED_JQ}")], token) {
+        Ok(out) => with_ci(lines, &out),
+        Err(_) => lines,
+    }
+}
+
+/// Puts what RED_JQ printed in the CI fields of the lines it is about.
+fn with_ci(mut lines: Vec<String>, out: &str) -> Vec<String> {
+    for l in out.lines() {
+        let new: Vec<&str> = l.split('\t').collect();
+        let [key, ci, ok, failed, total] = new[..] else { continue };
+        let Some(line) = key.strip_prefix('p').and_then(|i| i.parse::<usize>().ok()).and_then(|i| lines.get_mut(i)) else { continue };
+        let mut f: Vec<&str> = line.split('\t').collect();
+        if f.len() > 15 {
+            (f[11], f[13], f[14], f[15]) = (ci, ok, failed, total);
+            *line = f.join("\t");
+        }
+    }
+    lines
+}
+
 #[derive(Clone, Default)]
 pub struct Pr {
     pub review: bool,
@@ -58,6 +127,8 @@ pub enum Group {
 pub enum State {
     Failed,
     Waiting,
+    /// an agent that waits for the user: never of a PR, so that both can be told apart on one row
+    Asking,
     Working,
     Idle,
     Done,
@@ -214,7 +285,8 @@ fn fetch() -> Res<(Vec<String>, Vec<(String, String)>)> {
         let (m, r) = (format!("m={}", q("author")), format!("r={}", q("user-review-requested")));
         match gh(&["api", "graphql", "-f", &format!("query={QUERY}"), "-f", &m, "-f", &r, "--jq", JQ], token.as_deref()) {
             Ok(out) => {
-                for l in out.lines() {
+                let out = recheck(out.lines().map(String::from).collect(), token.as_deref());
+                for l in &out {
                     let f: Vec<&str> = l.split('\t').collect();
                     let path = f.get(1).and_then(|s| repos.iter().find(|r| r.1.eq_ignore_ascii_case(s)));
                     if let Some((p, _)) = path {
@@ -250,22 +322,14 @@ const DETAIL: &str = "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,n
   latestReviews(first:30){nodes{author{login} state}} \
   reviewRequests(first:30){nodes{requestedReviewer{__typename ... on User{login}}}} \
   reviewThreads(first:100){nodes{isResolved path line comments(first:1){nodes{author{login} body}}}} \
-  commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{__typename \
-    ... on CheckRun{name status conclusion} ... on StatusContext{context state}}}}}}}}}}";
+  commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{CHECK_FIELDS}}}}}}}}}";
 
 /// One tagged TSV line per thing. Comments lose their line breaks; the description keeps them.
 const DETAIL_JQ: &str = r#"
 def flat: (. // "") | gsub("[[:space:]]+"; " ") | .[0:400];
 .data.repository.pullRequest as $p | (
   ["M", $p.additions, $p.deletions, $p.changedFiles, $p.baseRefName, $p.headRefName],
-  (($p.commits.nodes[0].commit.statusCheckRollup.contexts.nodes // [])[]
-    | if .__typename == "CheckRun" then
-        ["C", (if .status != "COMPLETED" then "pending"
-               elif (.conclusion as $c | ["FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED", "CANCELLED"] | index($c)) != null then "fail"
-               else "ok" end), (.name | flat)]
-      else
-        ["C", (if .state == "SUCCESS" then "ok" elif .state == "PENDING" or .state == "EXPECTED" then "pending" else "fail" end), (.context | flat)]
-      end | select(.[1] != "ok")),
+  ($p.commits.nodes[0].commit.statusCheckRollup.contexts.nodes | checks[] | select(.is != "ok") | ["C", .is, (.name | flat)]),
   ($p.latestReviews.nodes[] | ["R", .state, (.author.login // "?")]),
   ($p.reviewRequests.nodes[] | ["R", "PENDING", (.requestedReviewer.login // "")]),
   ($p.reviewThreads.nodes[] | select(.isResolved | not)
@@ -291,6 +355,8 @@ pub struct Detail {
     pub base: String,
     pub head: String,
     pub failing: Vec<String>,
+    /// they fail, but block nothing
+    pub optional: Vec<String>,
     pub pending: Vec<String>,
     /// (state, login; empty for a team)
     pub reviews: Vec<(String, String)>,
@@ -313,6 +379,7 @@ impl Detail {
             match s(0).as_str() {
                 "M" => (d.added, d.deleted, d.changed, d.base, d.head) = (n(1), n(2), n(3) as usize, s(4), s(5)),
                 "C" if s(1) == "fail" => d.failing.push(s(2)),
+                "C" if s(1) == "optional" => d.optional.push(s(2)),
                 "C" => d.pending.push(s(2)),
                 "R" => d.reviews.push((s(1), s(2))),
                 "T" => d.threads.push(Thread { path: s(1), line: n(2), author: s(3), text: s(4) }),
@@ -328,8 +395,8 @@ impl Detail {
 pub fn detail(p: &Pr) -> Res<Detail> {
     let (owner, name) = p.repo.split_once('/').ok_or_else(|| p.repo.clone())?;
     let args = [
-        "api", "graphql", "-f", &format!("query={DETAIL}"), "-f", &format!("o={owner}"), "-f", &format!("r={name}"),
-        "-F", &format!("n={}", p.number), "--jq", DETAIL_JQ,
+        "api", "graphql", "-f", &format!("query={}", DETAIL.replace("CHECK_FIELDS", &check_fields("$n"))), "-f", &format!("o={owner}"), "-f", &format!("r={name}"),
+        "-F", &format!("n={}", p.number), "--jq", &format!("{CHECKS_JQ}{DETAIL_JQ}"),
     ];
     let mut d = Detail::parse(&gh(&args, token(&p.login).as_deref())?);
     if p.mergeable == "CONFLICTING" && !p.fork {
@@ -434,9 +501,20 @@ mod tests {
     }
 
     #[test]
+    fn red_ci_is_rechecked() {
+        let l = |n: u32| format!("mine\tA/b\t{n}\tt\tu\tfalse\t\tMERGEABLE\tbr\tfalse\tme\tFAILURE\t9\t25\t2\t27");
+        let got = with_ci(vec![l(1), l(2), l(3)], "p1\tSUCCESS\t22\t0\t23\np7\tSUCCESS\t1\t0\t1\nbad\np2\tFAILURE\t21\t1\t23");
+        let status = |l: &str| Pr::parse(&format!("{l}\tme\t/r")).unwrap().status().2;
+        assert_eq!(got[0], l(1)); // not answered: as it was
+        assert_eq!(status(&got[1]), tr().open);
+        assert_eq!(status(&got[2]), (tr().ci_red)(1, 23));
+    }
+
+    #[test]
     fn details() {
-        let d = Detail::parse("M\t1\t2\t3\tmain\tfeat\nC\tfail\te2e\nC\tpending\tlint\nR\tPENDING\t\nT\ta.rs\t7\tana\thi \u{1b}[31m\nF\ta.rs\t1\t2\nB\tx\nB\t\nB\ty\nZ\t?");
+        let d = Detail::parse("M\t1\t2\t3\tmain\tfeat\nC\tfail\te2e\nC\tpending\tlint\nC\toptional\tqa\nR\tPENDING\t\nT\ta.rs\t7\tana\thi \u{1b}[31m\nF\ta.rs\t1\t2\nB\tx\nB\t\nB\ty\nZ\t?");
         assert_eq!((d.added, d.changed, d.base.as_str(), d.head.as_str()), (1, 3, "main", "feat"));
+        assert_eq!(d.optional, ["qa"]);
         assert_eq!((d.failing, d.pending, d.reviews), (vec!["e2e".into()], vec!["lint".into()], vec![("PENDING".into(), String::new())]));
         assert_eq!((d.threads[0].line, d.threads[0].text.as_str()), (7, "hi [31m"));
         assert_eq!((d.files.len(), d.body), (1, vec!["x".to_string(), "".into(), "y".into()]));
