@@ -48,6 +48,8 @@ pub struct Text {
     pub hint_rm: &'static str,
     pub hint_force: &'static str,
     pub hint_any: &'static str,
+    /// what the orc of the commands dialog is up to
+    pub orc: &'static [&'static str],
     pub hint_scroll: &'static str,
     pub hint_close: &'static str,
     pub hint_view: &'static str,
@@ -228,7 +230,7 @@ mod tests {
         assert_eq!(p(&["", ""], &["", "", ""]), "en");
     }
 
-    /// Same commands in every language, and everything fits: sidebar 36 columns, rail 44, dialogs 60, commands 94.
+    /// Same commands in every language, and everything fits: sidebar 36 columns, rail 44, dialogs 60, commands 94, orc 44.
     #[test]
     fn every_language_fits() {
         let width = |s: &str| Span::raw(s).width();
@@ -258,6 +260,7 @@ mod tests {
             for s in [t.label_repo, t.label_parent, t.label_name, t.label_branch, t.label_port] {
                 assert!(width(s) <= 6, "{lang}: {s}");
             }
+            assert!(t.orc.iter().all(|s| width(s) <= 44), "{lang}: orc");
             assert!(width(&(t.counts)(99, 99)) <= 42, "{lang}: counts");
         }
     }

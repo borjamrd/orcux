@@ -1,4 +1,5 @@
 mod i18n;
+mod orc;
 mod prs;
 mod theme;
 mod tui;

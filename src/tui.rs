@@ -463,7 +463,7 @@ pub fn run() -> Res<()> {
             KeyCode::Char('q') => { tmux(&["detach-client"]).ok(); }
             KeyCode::Char('j') | KeyCode::Down => app.sel = (app.sel + 1).min(app.rows.len().saturating_sub(1)),
             KeyCode::Char('k') | KeyCode::Up => app.sel = app.sel.saturating_sub(1),
-            KeyCode::Char('?') => app.popup(tr().title_commands, (96, 64), &["commands"]),
+            KeyCode::Char('?') => app.popup(tr().title_commands, (148, 64), &["commands"]),
             KeyCode::Char('p') => if let Err(e) = toggle_rail() {
                 app.error(&e);
             },
@@ -705,7 +705,7 @@ pub fn rail() -> Res<()> {
             (KeyCode::Char('k') | KeyCode::Up, _) => { sel = sel.saturating_sub(1); Ok(()) }
             (KeyCode::Tab, _) => focus(SIDEBAR),
             (KeyCode::Char('p'), _) => toggle_rail(), // closes this pane
-            (KeyCode::Char('?'), _) => popup(tr().title_commands, (96, 64), &["commands"]),
+            (KeyCode::Char('?'), _) => popup(tr().title_commands, (148, 64), &["commands"]),
             (KeyCode::Char('r'), _) if busy.is_none() => { busy = Some(thread::spawn(|| { prs::refresh().ok(); })); Ok(()) }
             (KeyCode::Char('o'), Some(p)) => open_url(&p.url),
             (KeyCode::Enter, Some(p)) => view(p),
@@ -1120,11 +1120,26 @@ pub fn dialog_view(url: &str) -> Res<()> {
 /// The commands dialog (`orcux commands`, shown in a tmux popup by the sidebar's `?`).
 pub fn commands() -> Res<()> {
     let mut term = ratatui::init();
-    let mut top = 0u16;
+    let (mut top, start) = (0u16, Instant::now());
     let res = loop {
-        let mut max = 0;
+        let (mut max, mut animated) = (0, false);
         let drawn = term.draw(|f| {
             let [body, foot] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(f.area());
+            let mut body = body;
+            // the orc goes beside the list, if there is room for both
+            if body.width as usize >= 94 + 2 + orc::W && body.height as usize >= orc::H / 2 + 3 {
+                animated = true;
+                let [list, side] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(orc::W as u16 + 2)]).areas(body);
+                body = list;
+                let tick = (start.elapsed().as_millis() / 120) as usize;
+                let mut art = orc::lines(tick);
+                // typed letter by letter, then left to read
+                let text = tr().orc[tick / 60 % tr().orc.len()];
+                let typed: String = text.chars().take(tick % 60).collect();
+                let cursor = if tick / 4 % 2 == 0 { "▏" } else { " " };
+                art.extend([Line::default(), Line::from(vec![fg("> ", KELP), fg(typed, FOAM), fg(cursor, FOAM)])]);
+                f.render_widget(Paragraph::new(art), side.inner(Margin::new(1, 1)));
+            }
             let wide = body.width >= 90;
             let mut lines: Vec<Line> = vec![];
             for (group, cmds) in tr().commands {
@@ -1149,15 +1164,11 @@ pub fn commands() -> Res<()> {
         if let Err(e) = drawn {
             break Err(e.to_string());
         }
-        match event::read() {
-            Err(e) => break Err(e.to_string()),
-            Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => match k.code {
-                KeyCode::Esc | KeyCode::Char('q' | '?') => break Ok(()),
-                KeyCode::Char('j') | KeyCode::Down => top = (top + 1).min(max),
-                KeyCode::Char('k') | KeyCode::Up => top = top.saturating_sub(1),
-                _ => {}
-            },
-            Ok(_) => {} // e.g. resize: just redraw
+        match poll_input(if animated { 60 } else { 500 }) {
+            Some(Input::Key(KeyCode::Esc | KeyCode::Char('q' | '?'))) => break Ok(()),
+            Some(Input::Key(KeyCode::Char('j') | KeyCode::Down)) => top = (top + 1).min(max),
+            Some(Input::Key(KeyCode::Char('k') | KeyCode::Up)) => top = top.saturating_sub(1),
+            _ => {} // next frame, or a resize
         }
     };
     ratatui::restore();

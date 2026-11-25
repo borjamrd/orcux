@@ -18,6 +18,7 @@ It looks like herdr (herdr.dev: Rust + ratatui + its own VT), but orcux has work
 - `src/main.rs`: CLI, git, tmux and state.
 - `src/tui.rs`: the sidebar (`orcux sidebar`, the UI's left pane), the PR rail (`orcux rail`, right pane) and the dialogs. Colors come from `src/theme.rs` (design system "orcux"), also for tmux styles.
 - `src/i18n/`: every text the user sees, one file per language (`en`, `es`). Never write a user-facing literal elsewhere: add a field to `Text` (a missing translation does not compile) and use `tr().field`; texts with data are functions. Language: `ORCUX_LANG`, then `orcux lang <code>` (saved in `lang`), then the system, then English. The `every_language_fits` test checks widths.
+- `src/orc.rs`: the animated orc of the commands dialog (from 144 columns and 25 rows). Pixel layers with lower half blocks `▄`: `▀` leaves stripes in fonts that draw it shorter than the cell.
 - `src/prs.rs`: open PRs of the registered repos, read-only, through `gh` (JSON reduced to TSV with `--jq`, so no JSON crate).
 
 Model:
