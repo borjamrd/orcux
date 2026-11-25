@@ -10,7 +10,7 @@ It looks like herdr (herdr.dev: Rust + ratatui + its own VT), but orcux has work
 ## Commands
 
 - `cargo build --release`: the binary is `target/release/orcux`, linked from `~/.local/bin/orcux`.
-- `cargo test`: PR classification and parsing, language choice, text widths per language.
+- `cargo test`: PR classification and parsing, agent states, language choice, text widths per language.
 - `orcux help`: lists the subcommands. The same table (`commands` in `src/i18n/*.rs`) feeds the sidebar's `?` dialog (`orcux commands` in a tmux popup): every new command or shortcut goes there, in every language.
 
 ## Architecture (1 dependency: ratatui)
@@ -19,6 +19,7 @@ It looks like herdr (herdr.dev: Rust + ratatui + its own VT), but orcux has work
 - `src/tui.rs`: the sidebar (`orcux sidebar`, the UI's left pane), the PR rail (`orcux rail`, right pane) and the dialogs. Colors come from `src/theme.rs` (design system "orcux"), also for tmux styles.
 - `src/i18n/`: every text the user sees, one file per language (`en`, `es`). Never write a user-facing literal elsewhere: add a field to `Text` (a missing translation does not compile) and use `tr().field`; texts with data are functions. Language: `ORCUX_LANG`, then `orcux lang <code>` (saved in `lang`), then the system, then English. The `every_language_fits` test checks widths.
 - `src/orc.rs`: the animated orc of the commands dialog (from 144 columns and 25 rows). Pixel layers with lower half blocks `▄`: `▀` leaves stripes in fonts that draw it shorter than the cell.
+- `src/agent.rs`: what Claude Code agents say about themselves (working, question, permission, failed, done, idle), through hooks.
 - `src/prs.rs`: open PRs of the registered repos, read-only, through `gh` (JSON reduced to TSV with `--jq`, so no JSON crate).
 
 Model:
@@ -32,6 +33,7 @@ Model:
 - State in plain files in `~/.local/state/orcux/`: `worktrees.tsv` (repo, name, slot), `repos`, `folded` (folders and repos folded in the sidebar), `recent` (ids by last `show`) and `prs.2.tsv` (cache).
 - Opt+t/a/d/q: new, previous, next and close tab. Only letters whose Option character is the same on the Spanish and US layouts (Opt+x on Spanish types `∑`, which is Opt+w on US).
 - Opt+w opens `orcux switch` in a popup. Terminal.app cannot send Cmd keys, and without Option as Meta it types a character (`æ` on the Spanish layout), so those characters are bound in the root table (`SWITCH_KEYS`, set by the sidebar at start). tmux key tables are global: the binding checks the session name and passes the key on elsewhere. The sidebar marks working panes with `@orcux_busy`, for processes that do not watch screens.
+- Agent states: each worktree terminal gets `CLAUDE_CODE_PLUGIN_DIRS` with a plugin that orcux writes in `~/.local/state/orcux/claude-plugin` (the user's `settings.json` is never touched). Its hooks run `orcux hook <state>` (internal), which sets the pane option `@orcux_state="<state> <since>"`. The sidebar corrects what no hook tells (`agent::settle`): answered or rejected question, interrupted turn, result already seen. Panes without a mark (other agents, or opened before) fall back to "screen changed in the last 3s".
 - Prompts and errors are popups, never sidebar text: the sidebar calls `popup()`, which runs `orcux dialog new|rm|error` (internal) in a centered `display-popup` and blocks until it closes.
 - Worktrees go in `~/orcux/<repo>/<name>`. `orcux import` registers existing ones where they are (4th column of `worktrees.tsv`): they are named after their folder, never moved, and `rm`/`d` only unregisters them, even with `--force`. PRs match a worktree by its checked-out branch, read from git's files.
 - `worktrees.tsv` columns: repo, name, slot, path if imported, parent's name if it is a child. A child starts at its parent's last commit and is drawn under it; its folder is not inside, and removing the parent moves it up one level. Each pane gets `ORCUX_PORT=10000+slot*100`, `ORCUX_ID`, `ORCUX_SLOT` and `COMPOSE_PROJECT_NAME` via `tmux -e`.
@@ -51,6 +53,8 @@ Model:
 - A `gh` account that fails keeps its previous PRs. If its token cannot be read it counts as failed: without it gh answers as another account, with no PRs and no error.
 - PRs are asked once per logged-in `gh` account (token passed by environment, the active account is never switched) because repos belong to different accounts.
 - `w` on a PR fetches its branch before creating: an unknown branch would start from `origin/HEAD`.
+- Claude Code has no hook for an interruption (Esc) or a rejected permission: `Stop` does not fire. A working agent whose screen is still for 6 s becomes idle; leaving the mark made typing look like work.
+- A `claude -p` run by the agent inherits `TMUX_PANE` and the plugin: `orcux hook` ignores it by `CLAUDE_CODE_ENTRYPOINT` (`sdk-cli`, not `cli`). The hook prints nothing: its output would reach the agent.
 - `rm` runs `git worktree remove` BEFORE killing the pane, so that a dirty worktree fails without losing the terminal.
 
 ## Testing without touching the user's real tmux/worktrees
@@ -74,7 +78,7 @@ tmux kill-server; rm -rf ~/.cache/orcux-test
 
 - `orcux ls --json`, for `~/orquestador/estado.py`, which today reads `orca worktree ps --json`.
 - Docker Compose with fixed ports (fever2: 8010/8012) still collides; those ports would have to read `$ORCUX_PORT`.
-- Working/idle status = "screen changed in the last 3s" (heuristic). Upgrade: Claude Code hooks.
+- Agents other than Claude Code have no hooks: working/idle = "screen changed in the last 3s".
 - Globs in `.worktreeinclude` (`git ls-files -oi --exclude-from`).
 - A `wait <wt>` command (wait until an agent is idle), like Orca/herdr.
 
