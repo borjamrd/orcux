@@ -6,14 +6,18 @@ export const Orcux = async () => {
   const children = new Set()
   let last = ""
   let ended = ""
+  let session = ""
   let queue = Promise.resolve()
   const tell = (state) => {
     if (state === last) return
     last = state
+    send([state, "exact"])
+  }
+  const send = (args) => {
     // one after another: they must arrive in order
     queue = queue.then(() => new Promise((done) => {
       try {
-        const p = spawn("ORCUX_EXE", ["hook", state, "exact"], { stdio: "ignore" })
+        const p = spawn("ORCUX_EXE", ["hook", ...args], { stdio: "ignore" })
         p.on("exit", done)
         p.on("error", done)
       } catch {
@@ -27,6 +31,10 @@ export const Orcux = async () => {
       if (event.type === "session.created" && p.info?.parentID) children.add(p.info.id)
       const asks = /^(permission|question)\./.test(event.type)
       if (children.has(p.sessionID) && !asks) return
+      if (event.type === "session.status" && p.sessionID && p.sessionID !== session) {
+        session = p.sessionID
+        send(["session", "exact", session])
+      }
       if (event.type === "session.status" && p.status?.type !== "idle") {
         ended = ""
         tell("working")

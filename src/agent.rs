@@ -120,8 +120,29 @@ fn next_by_title(was: Option<Agent>, title: &str) -> Option<Agent> {
     (was != Some(new)).then_some(new)
 }
 
+/// Whether a mark is the one of a new terminal, and whether it is too old to be believed: its agent has no hooks, or waits
+/// for something before them.
+pub fn begins(mark: &str) -> (bool, bool) {
+    let limit = match mark.split(' ').nth(2) {
+        Some("starting") => 1800, // its preparation
+        Some("launched") => 15,
+        _ => return (false, false),
+    };
+    (true, Agent::parse(mark).is_none_or(|a| prs::now().saturating_sub(a.1) > limit))
+}
+
 /// Follows the title of a pane that no plugin marks, and takes off the mark of an agent that left.
 pub fn follow(p: &mut Pane) {
+    let (begins, over) = begins(&p.mark);
+    if begins {
+        if over {
+            let same = format!("#{{==:#{{@orcux_state}},{}}}", p.mark);
+            tmux(&["if-shell", "-F", "-t", &p.pane, &same, &format!("set-option -p -u -t '{}' @orcux_state", p.pane)]).ok();
+            (p.agent, p.mark) = (None, String::new());
+        } else if p.shell || from_title(&p.title).is_none() {
+            return;
+        }
+    }
     if p.shell {
         let old = p.mark.split(' ').nth(1).and_then(|at| at.parse().ok()).is_some_and(|at: u64| at + 3 < prs::now());
         if old {
@@ -130,7 +151,7 @@ pub fn follow(p: &mut Pane) {
         }
         return;
     }
-    if !p.mark.is_empty() && !p.mark.ends_with(" title") {
+    if !p.mark.is_empty() && !p.mark.ends_with(" title") && !begins {
         return;
     }
     if let Some(new) = next_by_title(p.agent.map(|a| a.0), &p.title) {
@@ -143,25 +164,64 @@ pub fn follow(p: &mut Pane) {
 
 /// `orcux hook <event>`, run by Claude Code, or with `exact` by OpenCode. Says nothing and never fails: its output
 /// would reach the agent.
-pub fn hook(event: &str, exact: bool) {
+pub fn hook(event: &str, rest: &[&str]) {
+    let exact = rest.first() == Some(&"exact");
     let input = if exact { String::new() } else { std::io::read_to_string(std::io::stdin()).unwrap_or_default() };
     let env = |k: &str| env::var(k).unwrap_or_default();
     // a `claude -p` that the agent itself runs is not the agent
     if env("TMUX_PANE").is_empty() || !matches!(env("CLAUDE_CODE_ENTRYPOINT").as_str(), "" | "cli") {
         return;
     }
+    let pane = env("TMUX_PANE");
+    let only_ours = |set: &str| { tmux(&["if-shell", "-F", "-t", &pane, "#{@orcux}", set]).ok(); };
     let state = match event {
-        "ask" if ["AskUserQuestion", "ExitPlanMode"].iter().any(|t| input.contains(&format!("\"tool_name\":\"{t}\""))) => "question",
+        "session" => {
+            if let Some(id) = rest.get(1).filter(|id| plain(id)) {
+                only_ours(&format!("set-option -p -t '{pane}' @orcux_session 'opencode|{id}|'"));
+            }
+            return;
+        }
+        "ask" if ["AskUserQuestion", "ExitPlanMode"].iter().any(|t| field(&input, "tool_name") == Some(t)) => "question",
         "ask" => "permission",
         e => e,
     };
-    let pane = env("TMUX_PANE");
     let set = match state {
-        "end" => format!("set-option -p -u -t '{pane}' @orcux_state"),
+        // its preparation ended; the agent, if any, is next
+        "launched" => format!("set-option -p -t '{pane}' @orcux_state 'working {} launched'", prs::now()),
+        "end" => {
+            // closed by the person, not by a tmux that ends: there is nothing to go on with
+            if matches!(field(&input, "reason"), Some("prompt_input_exit" | "logout")) {
+                only_ours(&format!("set-option -p -u -t '{pane}' @orcux_session"));
+            }
+            format!("set-option -p -u -t '{pane}' @orcux_state")
+        }
         _ if NAMES.iter().any(|n| n.0 == state) => format!("set-option -p -t '{pane}' @orcux_state '{state} {}{}'", prs::now(), if exact { " exact" } else { "" }),
         _ => return,
     };
-    tmux(&["if-shell", "-F", "-t", &pane, "#{@orcux}", &set]).ok(); // only orcux's panes
+    only_ours(&set); // only orcux's panes
+    // which conversation it is, and how: only what Claude Code says in events where nothing else is written by others
+    if !exact && matches!(event, "idle" | "working") && field(&input, "hook_event_name").is_some_and(|e| ["SessionStart", "UserPromptSubmit"].contains(&e))
+        && let Some(id) = field(&input, "session_id").filter(|id| plain(id))
+    {
+        let dir = env("CLAUDE_CONFIG_DIR");
+        if !dir.contains(['\'', '|']) && !dir.chars().any(char::is_control) {
+            only_ours(&format!("set-option -p -t '{pane}' @orcux_session 'claude|{id}|{dir}'"));
+        }
+        for (name, option) in [("model", "@orcux_model"), ("permission_mode", "@orcux_mode")] {
+            if let Some(v) = field(&input, name).filter(|v| restore::is_word(v)) {
+                only_ours(&format!("set-option -p -t '{pane}' {option} '{v}'"));
+            }
+        }
+    }
+}
+
+fn plain(s: &str) -> bool {
+    s.starts_with(|c: char| c.is_ascii_alphanumeric()) && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_".contains(c))
+}
+
+/// A text field of what Claude Code sends, which is one line of JSON.
+fn field<'a>(input: &'a str, name: &str) -> Option<&'a str> {
+    input.split(&format!("\"{name}\":\"")).nth(1)?.split('"').next()
 }
 
 /// Replaces a file of a plugin, if it is not like that already.

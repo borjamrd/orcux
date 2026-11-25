@@ -72,6 +72,34 @@ Claude Code agents get this as a skill in the terminals of orcux. For others, `o
 
 `orcux notify off` turns notifications off; `all` also tells when an agent is done.
 
+## Each repo, its needs
+
+A `.orcux` file in the main checkout says what its worktrees need:
+
+```
+setup = npm ci
+link = node_modules
+port DB_PORT = 1
+env DATABASE_URL = postgres://localhost:${DB_PORT}/${ORCUX_NAME}
+teardown = docker compose down -v
+```
+
+`setup` runs in the terminal of every new worktree, `teardown` before one is deleted, `link` shares a folder of the main checkout, `port` names one of its 100 ports and `env` adds variables. It can run commands, so nothing in it is used until you read and approve it with `orcux trust`, and again whenever it changes. `orcux ports` lists the ports and which are in use.
+
+## Bringing work back
+
+```sh
+orcux conflicts                  # which worktrees clash, also with uncommitted work
+orcux merge fix-login --check    # what would happen
+orcux merge fix-login            # merges its branch, then deletes the worktree and the branch
+```
+
+A child goes into its parent, the others into the main branch. Nothing is pushed. It refuses when there are uncommitted changes, when its agent works or when its pull request is open. `m` does it from the sidebar.
+
+## After a restart
+
+If tmux ends, orcux remembers which terminals were open and which conversations their agents had. Press `R` on the empty screen, or run `orcux restore`, and Claude Code and OpenCode go on where they were.
+
 ## Ports
 
 Worktrees share your computer, so two servers on port 3000 collide. Each terminal gets its own block:

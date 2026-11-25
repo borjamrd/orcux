@@ -28,6 +28,9 @@ It does not emulate terminals: **ratatui draws the sidebar and tmux runs the ter
 - `src/mark.rs`: the logo, the "o" of Fraunces Bold with an "x" as subscript, in braille dots with a gradient (`DEEP`, `CURRENT`, `FOAM`). Shown by `orcux welcome` (internal), the placeholder pane when no worktree is shown: it passes its keys to the sidebar.
 - `src/pixels.rs`: draws the orc, in shades of the text color, with lower half blocks `▄`: `▀` leaves stripes in fonts that draw it shorter than the cell.
 - `src/agent.rs`: what agents say about themselves (working, question, permission, failed, done, idle): Claude Code through hooks, OpenCode through `src/opencode.js`, Gemini CLI and Codex by the title of their terminal (documented, not tested with the real ones).
+- `src/config.rs`: `.orcux` in the main checkout (setup, teardown, link, port, env). Used only as approved with `orcux trust`, kept whole in `trusted/`, never through a hash. `trust` asks at a terminal.
+- `src/merge.rs`: `merge` (merge-tree first; merges exactly the commit it checked, then removes; never pushes) and `conflicts` (snapshots of uncommitted work through a temporary index: the agent's index is not touched).
+- `src/restore.rs`: the sidebar keeps `open.tsv` (tabs and conversations, with the id of the tmux server); with another server, they go to `lost.tsv` for `restore`. Conversations come from `@orcux_session`, `@orcux_model` and `@orcux_mode`, set from hook fields only: the command line can hold the text of a prompt.
 - `src/work.rs`: `run`, `agents`, `wait`, `next`, `ls --json` and notifications. `src/skill.md` is the skill, loaded with the Claude plugin.
 - `src/prs.rs`: open PRs of the registered repos, read-only, through `gh` (JSON reduced to TSV with `--jq`, so no JSON crate).
 
@@ -59,6 +62,8 @@ Model:
 - Several agents run orcux at once: state changes go through `change()` / `lock()`, and tmux changes that read and then act (`spawn`, `ensure_ui`, `show_tab`, `close_tab`) take `lock()` too. Never hold it while git works. A worktree is registered before git creates it, so its name and ports are taken. State files are replaced whole, and one that cannot be read is an error, not an empty list.
 - `swap-pane` gives a pane the window of another one, with the activity of that window: without remembering since when a pane is hidden, a working agent looked idle.
 - `rm` refuses a worktree that holds another one: git would delete it with everything inside.
+- A new terminal with something to run is marked `working <t> starting` (its `.orcux` setup) or `launched`, so that `wait` does not see "no agent" before the agent tells; they expire (30 min, 15 s).
+- `remove` checks everything that would stop git (changes, lock, submodules) before the teardown: a teardown may delete a database.
 - `run` types `agent "$(cat file)"`: the task goes in a file of mode 0600, so nothing in it means anything to the shell, and aliases still work.
 - The plugin of OpenCode starts `orcux hook` one after another: two at once could arrive in the wrong order.
 - Session targets always use `=` (exact match) and no window index: `=orcux:`. Plain `orcux` prefix-matches `orcux-bg`. The user's `~/.tmux.conf` has `base-index 1`, so `:0` breaks.

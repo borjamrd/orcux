@@ -272,6 +272,8 @@ struct Seen {
     dialog: u64,
 }
 
+/// An interface is on screen: nothing else may be printed.
+pub static DRAWING: AtomicBool = AtomicBool::new(false);
 /// Whether a person has the session open, for the thread that fetches PRs.
 static WATCHED: AtomicBool = AtomicBool::new(true);
 
@@ -284,6 +286,7 @@ struct App {
     seen: HashMap<String, Seen>,
     /// the last mark of each terminal that was told to the person
     told: HashMap<String, u64>,
+    keeper: restore::Keeper,
     started: bool,
     /// to notice that the clock jumped or the computer slept
     clock: (Instant, u64),
@@ -395,6 +398,7 @@ impl App {
             self.live.entry(p.wt.clone()).or_default().push(p);
         }
         self.started = true;
+        self.keeper.keep(&self.live.values().flatten().collect::<Vec<_>>());
         self.heal(&wts);
         let bar = tab_bar();
         if self.bar != bar {
@@ -660,7 +664,7 @@ pub fn run() -> Res<()> {
         }
     });
     let mut app = App {
-        rows: vec![], sel: 1, msg: String::new(), seen: HashMap::new(), told: HashMap::new(), started: false, clock: (Instant::now(), prs::now()), live: HashMap::new(),
+        rows: vec![], sel: 1, msg: String::new(), seen: HashMap::new(), told: HashMap::new(), keeper: restore::Keeper::start(), started: false, clock: (Instant::now(), prs::now()), live: HashMap::new(),
         prs: Cache::default(), active: true, status: Default::default(), busy: HashMap::new(),
         visible: String::new(), missing: false, bar: String::new(), wts: vec![],
     };
@@ -705,6 +709,13 @@ pub fn run() -> Res<()> {
                 app.error(&e);
             },
             KeyCode::Char('r') => { work::next().ok(); } // nobody waits: stay
+            KeyCode::Char('R') => if let Err(e) = restore::restore() {
+                app.error(&e);
+            },
+            KeyCode::Char('m') => if let Some(Row::Wt(w, _)) = app.selected() {
+                let id = w.id();
+                app.popup(tr().title_merge, (76, 14), &["dialog", "merge", &id]);
+            },
             KeyCode::Tab => { focus(RAIL).ok(); }
             KeyCode::Char('N') => if let Some(Row::Wt(w, _)) = app.selected() {
                 let id = w.id();
@@ -954,6 +965,11 @@ pub fn welcome() -> Res<()> {
             if waiting > 0 {
                 let (g, c) = look(State::Asking);
                 lines.push(Line::from(fg(format!("{g} {}", (tr().agents_wait)(waiting)), c)));
+                lines.push(Line::default());
+            }
+            let lost = restore::lost().len();
+            if lost > 0 {
+                lines.push(Line::from(vec![fg("R", FOAM), fg(format!(" {}", (tr().restore_offer)(lost)), MUTED)]));
                 lines.push(Line::default());
             }
             lines.push(keys(&[("n", tr().k_new), ("A", tr().k_add), ("?", tr().k_commands)]));
@@ -1554,6 +1570,7 @@ pub fn commands() -> Res<()> {
 // ---------- small dialogs: each one is an `orcux dialog ...` process inside a tmux popup ----------
 
 fn dialog(body: impl FnOnce(&mut ratatui::DefaultTerminal) -> Res<()>) -> Res<()> {
+    DRAWING.store(true, Ordering::Relaxed);
     let mut term = ratatui::init();
     let res = body(&mut term);
     ratatui::restore();
@@ -1593,6 +1610,7 @@ pub fn dialog_new(repo: &Path, parent: Option<&Wt>) -> Res<()> {
     dialog(|term| {
         let repo_name = repo.file_name().unwrap_or_default().to_string_lossy().to_string();
         let (mut name, mut err) = (String::new(), String::new());
+        let untrusted = matches!(config::of(repo), Ok(config::Trust::No));
         let dirty = parent.is_some_and(|p| git(&p.path(), &["status", "--porcelain"]).is_ok_and(|s| !s.is_empty()));
         loop {
             let lines = |status: Line<'static>| {
@@ -1601,6 +1619,9 @@ pub fn dialog_new(repo: &Path, parent: Option<&Wt>) -> Res<()> {
                     l.push(Line::from(vec![tag(tr().label_parent).fg(MUTED), p.name.clone().fg(FOAM), format!("  {}", p.branch().unwrap_or_default()).fg(MUTED)]));
                 }
                 l.push(Line::from(vec![tag(tr().label_name).fg(MUTED), format!("{name}▏").into()]));
+                if untrusted {
+                    l.push(Line::from((tr().untrusted)(&tilde(repo))).fg(SIGNAL));
+                }
                 if let (Some(p), true) = (parent, dirty) {
                     l.push(Line::from((tr().parent_dirty)(&p.name)).fg(SIGNAL));
                 }
@@ -1767,6 +1788,46 @@ pub fn dialog_rm(w: &Wt) -> Res<()> {
     })
 }
 
+/// Merges a worktree and takes it away, after telling what will happen.
+pub fn dialog_merge(w: &Wt) -> Res<()> {
+    dialog(|term| {
+        draw_dialog(term, vec![Line::from(tr().loading).fg(MUTED)], "")?;
+        let mut err = String::new();
+        let plan = merge::plan(w, None, false);
+        let others = merge::with_others(w).unwrap_or_default();
+        loop {
+            let mut lines = vec![];
+            let ready = match &plan {
+                Ok(p) => {
+                    lines.push(Line::from((tr().merge_plan)(&p.branch, &p.into, p.commits as usize)).fg(FOAM));
+                    lines.push(Line::from(tr().merge_then).fg(MUTED));
+                    if !p.clashes.is_empty() {
+                        lines.push(Line::from((tr().merge_clash)(&p.into, &p.clashes.join(", "))).fg(CORAL));
+                    }
+                    p.clashes.is_empty()
+                }
+                Err(e) => {
+                    lines.push(Line::from(e.clone()).fg(CORAL));
+                    false
+                }
+            };
+            for (other, files) in &others {
+                lines.push(Line::from((tr().merge_others)(other, &files.join(", "))).fg(SIGNAL));
+            }
+            lines.extend([Line::default(), Line::from(err.clone()).fg(CORAL)]);
+            draw_dialog(term, lines, if ready && err.is_empty() { tr().hint_merge } else { tr().hint_any })?;
+            match (key()?, &plan) {
+                (None, _) => {}
+                (Some(KeyCode::Char('y')), Ok(p)) if ready && err.is_empty() => match merge::run_plan(w, p) {
+                    Ok(()) => return Ok(()),
+                    Err(e) => err = short(&e),
+                },
+                _ => return Ok(()),
+            }
+        }
+    })
+}
+
 /// Closes the visible tab (Opt+q), which may be running something.
 pub fn dialog_close() -> Res<()> {
     let (w, n) = visible()?;
@@ -1812,7 +1873,7 @@ mod tests {
         // both are drawn on the row of a worktree
         let pr = [State::Failed, State::Waiting, State::Done].map(|s| look(s).0);
         for a in [Agent::Question, Agent::Permission, Agent::Failed, Agent::Done] {
-            let p = Pane { pane: "%1".into(), wt: "r/w".into(), tab: 1, on: true, busy: false, cmd: "claude".into(), agent: Some((a, 0)), mark: String::new(), title: String::new(), shell: false, activity: 0 };
+            let p = Pane { pane: "%1".into(), wt: "r/w".into(), tab: 1, on: true, busy: false, cmd: "claude".into(), agent: Some((a, 0)), mark: String::new(), title: String::new(), session: String::new(), shell: false, activity: 0 };
             assert!(!pr.contains(&look(p.look()).0), "{a:?}");
         }
     }
