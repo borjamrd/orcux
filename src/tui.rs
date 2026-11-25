@@ -5,7 +5,7 @@ use ratatui::{
     widgets::{Block, Paragraph, Wrap},
 };
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     hash::{DefaultHasher, Hash, Hasher},
     io::stdout,
     sync::{atomic::{AtomicBool, Ordering}, mpsc},
@@ -122,6 +122,16 @@ fn blocks(f: &mut Frame, area: Rect, items: Vec<(Vec<Line>, bool)>, active: bool
     spans.into_iter().map(|(a, b)| (row(a), row(b))).collect() // where each block is on screen: [from, to)
 }
 
+/// The line beside the terminal, in the accent, over column `x` of this pane: it keeps what is behind it.
+fn edge(f: &mut Frame, x: u16) {
+    let area = f.area();
+    for y in area.y..area.bottom() {
+        if let Some(c) = f.buffer_mut().cell_mut((x, y)) {
+            c.set_symbol("│").set_fg(CURRENT);
+        }
+    }
+}
+
 /// The selection of a pane without the focus.
 const DIM: Color = Color::from_u32(0x1f2329);
 
@@ -150,6 +160,8 @@ enum Wake {
     Resize,
     /// that connection
     Closed(u32),
+    /// the files of a worktree were read
+    Files,
 }
 
 struct Wakes {
@@ -198,6 +210,10 @@ impl Wakes {
                 News::Closed => Wake::Closed(link),
             }).ok();
         });
+    }
+
+    fn sender(&self) -> mpsc::Sender<Wake> {
+        self.tx.clone()
     }
 
     /// What happened, or None after a second without news. Several news of tmux count as one.
@@ -272,6 +288,8 @@ struct Seen {
     dialog: u64,
 }
 
+/// An interface is on screen: nothing else may be printed.
+pub static DRAWING: AtomicBool = AtomicBool::new(false);
 /// Whether a person has the session open, for the thread that fetches PRs.
 static WATCHED: AtomicBool = AtomicBool::new(true);
 
@@ -284,6 +302,7 @@ struct App {
     seen: HashMap<String, Seen>,
     /// the last mark of each terminal that was told to the person
     told: HashMap<String, u64>,
+    keeper: restore::Keeper,
     started: bool,
     /// to notice that the clock jumped or the computer slept
     clock: (Instant, u64),
@@ -299,8 +318,159 @@ struct App {
     missing: bool,
     /// last tab bar sent to tmux
     bar: String,
-    /// last status bar sent to tmux
-    status: (String, String),
+    /// the files of a worktree, in place of the list
+    files: Option<FilesView>,
+    /// where each row was drawn, for the mouse: [from, to) and which row
+    at: std::cell::RefCell<Vec<(u16, u16, Option<usize>)>>,
+}
+
+/// The files of one worktree and what changed in them (`f`).
+struct FilesView {
+    wt: Wt,
+    files: Option<Res<files::Files>>,
+    rows: Vec<files::Item>,
+    /// folders opened or closed by hand
+    flipped: HashSet<String>,
+    only: bool,
+    sel: usize,
+    reading: Option<mpsc::Receiver<Res<files::Files>>>,
+    read: Instant,
+    wake: mpsc::Sender<Wake>,
+}
+
+impl FilesView {
+    fn new(wt: Wt, wake: mpsc::Sender<Wake>) -> FilesView {
+        let mut v = FilesView { wt, files: None, rows: vec![], flipped: HashSet::new(), only: false, sel: 0, reading: None, read: Instant::now(), wake };
+        v.start();
+        v
+    }
+
+    /// In a thread: a big repo takes a while, and keys must not wait.
+    fn start(&mut self) {
+        if self.reading.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let (dir, wake) = (self.wt.path(), self.wake.clone());
+        thread::spawn(move || {
+            tx.send(files::read(&dir)).ok();
+            wake.send(Wake::Files).ok();
+        });
+        (self.reading, self.read) = (Some(rx), Instant::now());
+    }
+
+    /// Whether something new arrived. Read again when a terminal printed (an agent may have written files), and now and
+    /// then for what changes without printing.
+    fn news(&mut self, printed: bool) -> bool {
+        let mut new = false;
+        if let Some(rx) = &self.reading {
+            match rx.try_recv() {
+                Ok(r) => {
+                    self.reading = None;
+                    new = !matches!((&self.files, &r), (Some(Ok(a)), Ok(b)) if a == b);
+                    if new {
+                        self.files = Some(r);
+                        self.rebuild();
+                    }
+                }
+                Err(mpsc::TryRecvError::Disconnected) => self.reading = None,
+                Err(_) => {}
+            }
+        }
+        let age = self.read.elapsed().as_secs();
+        if (printed && age >= 2) || age >= 10 {
+            self.start();
+        }
+        new
+    }
+
+    fn rebuild(&mut self) {
+        let at = self.rows.get(self.sel).map(|r| r.path.clone());
+        self.rows = match &self.files {
+            Some(Ok(f)) => files::rows(f, &self.flipped, self.only),
+            _ => vec![],
+        };
+        if let Some(i) = at.and_then(|p| self.rows.iter().position(|r| r.path == p)) {
+            self.sel = i;
+        }
+        self.sel = self.sel.min(self.rows.len().saturating_sub(1));
+    }
+
+    fn flip(&mut self, path: String) {
+        if !self.flipped.remove(&path) {
+            self.flipped.insert(path);
+        }
+        self.rebuild();
+    }
+
+    fn draw(&self, f: &mut Frame, area: Rect, foot: Rect, active: bool) -> Vec<(u16, u16, Option<usize>)> {
+        let w = area.width;
+        let mut at = vec![];
+        let [head, _, body] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+        let summary = match &self.files {
+            Some(Ok(x)) if !x.marks.is_empty() => {
+                let (n, a, d) = x.summary();
+                vec![fg(format!("{n}  "), MUTED), fg(format!("+{a} "), KELP), fg(format!("−{d} "), CORAL)]
+            }
+            _ => vec![],
+        };
+        let left = vec![fg(" ‹ ", MUTED), fg(format!("{}/", self.wt.repo_name()), MUTED), self.wt.name.clone().bold().fg(FOAM)];
+        f.render_widget(lr(w, left, summary), head);
+        let note = |text: &str, c: Color| Paragraph::new(format!(" {text}")).wrap(Wrap { trim: true }).fg(c);
+        match &self.files {
+            None => f.render_widget(note(tr().files_reading, MUTED), body),
+            Some(Err(e)) => f.render_widget(note(&short(e), CORAL), body),
+            Some(Ok(_)) if self.rows.is_empty() => f.render_widget(note(if self.only { tr().files_clean } else { tr().files_none }, MUTED), body),
+            Some(Ok(_)) => {
+                let items = self.rows.iter().enumerate().map(|(i, r)| (vec![file_line(r, w)], i == self.sel)).collect();
+                at = blocks(f, body, items, active).into_iter().enumerate().map(|(i, (a, b))| (a, b, Some(i))).collect();
+            }
+        }
+        let lines = vec![
+            keys(&[("⏎", tr().k_diff), ("c", if self.only { tr().k_all_files } else { tr().k_only_changes })]),
+            keys(&[("esc", tr().k_back), ("?", tr().k_commands)]),
+        ];
+        f.render_widget(Paragraph::new(lines), foot);
+        at
+    }
+}
+
+/// A file or a folder: its name, indented, and on the right what changed.
+fn file_line<'a>(r: &files::Item, width: u16) -> Line<'a> {
+    let color = |c: files::Change| match c {
+        files::Change::Modified => SIGNAL,
+        files::Change::Added | files::Change::Untracked => KELP,
+        files::Change::Deleted | files::Change::Conflict => CORAL,
+        files::Change::Renamed => CURRENT,
+    };
+    let right: Vec<Span> = match r.mark {
+        _ if r.dir && r.changed > 0 => vec![fg(format!("{} ", r.changed), MUTED), fg("● ", SIGNAL)],
+        Some(m) => {
+            let mut s = vec![];
+            if let Some((a, d)) = m.lines.filter(|l| *l != (0, 0)) {
+                if a > 0 {
+                    s.push(fg(format!("+{a} "), KELP));
+                }
+                if d > 0 {
+                    s.push(fg(format!("−{d} "), CORAL));
+                }
+            }
+            s.push(fg(format!("{} ", m.change.glyph()), color(m.change)));
+            s
+        }
+        None => vec![],
+    };
+    let room = (width as usize).saturating_sub(Line::from(right.clone()).width() + 2 * r.depth + 4);
+    let indent = " ".repeat(2 * r.depth + 1);
+    let left = if r.dir {
+        vec![fg(format!("{indent}{}", if r.open { "▾ " } else { "▸ " }), LINE), fg(fit(&r.name, room), MUTED)]
+    } else {
+        let c = r.mark.map_or(FOAM, |m| color(m.change));
+        let name = fg(fit(&r.name, room), c);
+        let name = if r.mark.is_some_and(|m| m.change == files::Change::Deleted) { name.crossed_out() } else { name };
+        vec![fg(format!("{indent}  "), LINE), name]
+    };
+    lr(width, left, right)
 }
 
 impl App {
@@ -395,6 +565,7 @@ impl App {
             self.live.entry(p.wt.clone()).or_default().push(p);
         }
         self.started = true;
+        self.keeper.keep(&self.live.values().flatten().collect::<Vec<_>>());
         self.heal(&wts);
         let bar = tab_bar();
         if self.bar != bar {
@@ -403,7 +574,6 @@ impl App {
         }
         self.prs = prs::cached();
         sync_rail().ok(); // no room for it: stay without
-        self.update_status(&wts);
     }
 
     /// The visible terminal ended (`exit`): shows another tab of its worktree, or the placeholder. Waits for a
@@ -439,28 +609,22 @@ impl App {
         self.missing || self.live.values().flatten().any(|p| p.busy || asked(p))
     }
 
-    fn update_status(&mut self, wts: &[Wt]) {
-        let esc = |s: &str| s.replace('#', "##").replace('%', "%%");
-        let mut left = String::new();
-        match wts.iter().filter(|w| self.waits(&w.id())).count() {
-            0 => {}
-            n => left += &format!(" #[fg={}]{} {} ", hex(theme::SIGNAL), look(State::Asking).0, (tr().agents_wait)(n)),
+    /// What waits and what works, for the foot of the sidebar.
+    fn totals<'a>(&self) -> Line<'a> {
+        let mut s: Vec<Span> = vec![" ".into()];
+        let waits = self.wts.iter().filter(|w| self.waits(&w.id())).count();
+        if waits > 0 {
+            s.push(fg(format!("{} {}  ", look(State::Asking).0, (tr().agents_wait)(waits)), SIGNAL));
         }
-        match self.prs.prs.iter().filter(|p| p.status().0 == Group::Yours).count() {
-            0 => left += " ",
-            n => left += &format!(" #[fg={}]◆ {}  ", hex(theme::SIGNAL), (tr().prs_yours)(n)),
+        let yours = self.prs.prs.iter().filter(|p| p.status().0 == Group::Yours).count();
+        if yours > 0 {
+            s.push(fg(format!("◆ {}  ", (tr().prs_yours)(yours)), SIGNAL));
         }
-        left += &match wts.iter().filter(|w| self.working(&w.id())).count() {
-            0 => format!("#[fg={}]○ {}", hex(theme::MUTED), (tr().n_working)(0)),
-            n => format!("#[fg={}]● {}", hex(theme::CURRENT), (tr().n_working)(n)),
-        };
-        let shown = terminal_pane().map(|p| p.1).unwrap_or_default();
-        let right = wts.iter().find(|w| w.id() == shown)
-            .map(|w| format!("{} #[fg={}]:{} ", esc(&shown), hex(theme::MUTED), w.port())).unwrap_or_default();
-        if self.status != (left.clone(), right.clone()) {
-            set_status(&left, &right);
-            self.status = (left, right);
-        }
+        s.push(match self.wts.iter().filter(|w| self.working(&w.id())).count() {
+            0 => fg(format!("○ {}", (tr().n_working)(0)), MUTED),
+            n => fg(format!("● {}", (tr().n_working)(n)), CURRENT),
+        });
+        Line::from(s)
     }
 
     fn selected(&self) -> Option<&Row> {
@@ -566,9 +730,21 @@ impl App {
     }
 
     fn draw(&self, f: &mut Frame) {
-        f.render_widget(Block::new().style(Style::new().bg(ABYSS).fg(FOAM)), f.area());
-        let [_, list, _, foot] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1), Constraint::Length(2)]).areas(f.area());
-        let w = f.area().width;
+        f.render_widget(Block::new().style(Style::new().bg(Color::Reset).fg(FOAM)), f.area()); // the terminal's own ground
+        let sum = self.totals();
+        let lines = if sum.width() < f.area().width as usize { 1 } else { 2 };
+        let [_, list, _, foot, _, below] = Layout::vertical([
+            Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1), Constraint::Length(2), Constraint::Length(1), Constraint::Length(lines),
+        ]).areas(f.area());
+        let right = f.area().right().saturating_sub(1);
+        f.render_widget(Paragraph::new(sum).wrap(Wrap { trim: true }), Rect { width: below.width.saturating_sub(1), ..below });
+        let list = Rect { width: list.width.saturating_sub(1), ..list };
+        if let Some(v) = &self.files {
+            *self.at.borrow_mut() = v.draw(f, Rect { height: list.height + 1, ..list }, foot, self.active);
+            edge(f, right);
+            return;
+        }
+        let w = f.area().width - 1; // the last column is the line
         let is_wt = |j: usize| matches!(self.rows.get(j), Some(Row::Wt(..)));
         let mut items = vec![];
         for (i, r) in self.rows.iter().enumerate() {
@@ -593,7 +769,11 @@ impl App {
                 Row::Wt(wt, trail) => items.push((self.wt_lines(wt, w, trail, sel), sel)),
             }
         }
-        blocks(f, list, items, self.active);
+        // a gap is one empty line; every other block is a row, in order
+        let mut n = 0;
+        let owners: Vec<Option<usize>> = items.iter().map(|(b, _)| (!(b.len() == 1 && b[0].width() == 0)).then(|| { n += 1; n - 1 })).collect();
+        let spans = blocks(f, list, items, self.active);
+        *self.at.borrow_mut() = spans.into_iter().zip(owners).map(|((a, b), o)| (a, b, o)).collect();
         if self.msg.is_empty() {
             let lines = vec![
                 keys(&[("n", tr().k_new), ("A", tr().k_add), ("d", tr().k_delete)]),
@@ -603,6 +783,7 @@ impl App {
         } else {
             f.render_widget(Paragraph::new(self.msg.as_str()).wrap(Wrap { trim: true }).fg(CORAL), foot);
         }
+        edge(f, right);
     }
 
     fn popup(&mut self, title: &str, size: (u32, u32), args: &[&str]) {
@@ -649,6 +830,7 @@ fn input(e: Event) -> Option<Input> {
 
 pub fn run() -> Res<()> {
     let mut term = ratatui::init();
+    execute!(stdout(), event::EnableMouseCapture).ok();
     let mut wakes = Wakes::start();
     style_ui().ok();
     thread::spawn(|| loop {
@@ -660,9 +842,9 @@ pub fn run() -> Res<()> {
         }
     });
     let mut app = App {
-        rows: vec![], sel: 1, msg: String::new(), seen: HashMap::new(), told: HashMap::new(), started: false, clock: (Instant::now(), prs::now()), live: HashMap::new(),
-        prs: Cache::default(), active: true, status: Default::default(), busy: HashMap::new(),
-        visible: String::new(), missing: false, bar: String::new(), wts: vec![],
+        rows: vec![], sel: 1, msg: String::new(), seen: HashMap::new(), told: HashMap::new(), keeper: restore::Keeper::start(), started: false, clock: (Instant::now(), prs::now()), live: HashMap::new(),
+        prs: Cache::default(), active: true, busy: HashMap::new(),
+        visible: String::new(), missing: false, bar: String::new(), wts: vec![], files: None, at: Default::default(),
     };
     let (mut last, binary) = (Instant::now(), Binary::now());
     app.refresh();
@@ -676,6 +858,30 @@ pub fn run() -> Res<()> {
             ratatui::restore();
             break Err(restart_self());
         }
+        let wake = match wake {
+            Some(Wake::Input(Input::Wheel { down })) => Some(Wake::Input(Input::Key(if down { KeyCode::Down } else { KeyCode::Up }))),
+            // a click selects; on what is selected, opens it
+            Some(Wake::Input(Input::Click { row, .. })) => {
+                let hit = app.at.borrow().iter().find(|a| (a.0..a.1).contains(&row)).and_then(|a| a.2);
+                let sel = match &mut app.files {
+                    Some(v) => &mut v.sel,
+                    None => &mut app.sel,
+                };
+                match hit {
+                    Some(i) if i == *sel => Some(Wake::Input(Input::Key(KeyCode::Enter))),
+                    Some(i) => {
+                        *sel = i;
+                        draw = true;
+                        continue;
+                    }
+                    None => {
+                        draw = false;
+                        continue;
+                    }
+                }
+            }
+            w => w,
+        };
         let k = match wake {
             Some(Wake::Input(Input::Key(k))) => k,
             Some(Wake::Focus) => {
@@ -685,8 +891,9 @@ pub fn run() -> Res<()> {
                 continue;
             }
             w => {
+                let files = app.files.as_mut().is_some_and(|v| v.news(matches!(w, Some(Wake::Tmux))));
                 // half a minute: what tells how long ago something was
-                draw = matches!(w, Some(Wake::Tmux | Wake::Resize)) || wakes.changed() || app.pending() || !control::connected() || last.elapsed().as_secs() >= 30;
+                draw = files || matches!(w, Some(Wake::Tmux | Wake::Resize)) || wakes.changed() || app.pending() || !control::connected() || last.elapsed().as_secs() >= 30;
                 if draw {
                     app.refresh();
                     last = Instant::now();
@@ -696,16 +903,67 @@ pub fn run() -> Res<()> {
         };
         draw = true;
         app.msg.clear();
+        if let Some(v) = &mut app.files {
+            let row = v.rows.get(v.sel).map(|r| (r.path.clone(), r.dir, r.open));
+            match k {
+                KeyCode::Esc | KeyCode::Char('f') => app.files = None,
+                KeyCode::Char('j') | KeyCode::Down => v.sel = (v.sel + 1).min(v.rows.len().saturating_sub(1)),
+                KeyCode::Char('k') | KeyCode::Up => v.sel = v.sel.saturating_sub(1),
+                KeyCode::Char('c') => {
+                    v.only = !v.only;
+                    v.flipped.clear();
+                    v.rebuild();
+                }
+                KeyCode::Enter | KeyCode::Char(' ' | 'l') | KeyCode::Right if row.as_ref().is_some_and(|r| r.1) => {
+                    let (path, _, open) = row.unwrap_or_default();
+                    if !open || matches!(k, KeyCode::Enter | KeyCode::Char(' ')) {
+                        v.flip(path);
+                    }
+                }
+                KeyCode::Char('h') | KeyCode::Left => if let Some((path, dir, open)) = row {
+                    // closes it, or goes to the folder it is in
+                    if dir && open {
+                        v.flip(path);
+                    } else if let Some(i) = v.rows[..v.sel].iter().rposition(|r| r.dir && r.depth < v.rows[v.sel].depth) {
+                        v.sel = i;
+                    }
+                },
+                KeyCode::Enter => if let Some((path, ..)) = row {
+                    let dir = v.wt.path().to_string_lossy().to_string();
+                    app.popup(&path.clone(), (148, 48), &["dialog", "diff", &dir, &path]);
+                },
+                KeyCode::Char('?') => app.popup(tr().title_commands, (158, 46), &["commands"]),
+                KeyCode::Char('q') => { detach().ok(); }
+                _ => {}
+            }
+            continue;
+        }
         match k {
             KeyCode::Char('q') => { detach().ok(); }
             KeyCode::Char('j') | KeyCode::Down => app.sel = (app.sel + 1).min(app.rows.len().saturating_sub(1)),
             KeyCode::Char('k') | KeyCode::Up => app.sel = app.sel.saturating_sub(1),
-            KeyCode::Char('?') => app.popup(tr().title_commands, (136, 34), &["commands"]),
+            KeyCode::Char('?') => app.popup(tr().title_commands, (158, 46), &["commands"]),
             KeyCode::Char('p') => if let Err(e) = toggle_rail() {
                 app.error(&e);
             },
             KeyCode::Char('r') => { work::next().ok(); } // nobody waits: stay
+            KeyCode::Char('R') => if let Err(e) = restore::restore() {
+                app.error(&e);
+            },
+            KeyCode::Char('m') => if let Some(Row::Wt(w, _)) = app.selected() {
+                let id = w.id();
+                app.popup(tr().title_merge, (76, 14), &["dialog", "merge", &id]);
+            },
             KeyCode::Tab => { focus(RAIL).ok(); }
+            KeyCode::Char('f') => {
+                let wt = match app.selected() {
+                    Some(Row::Wt(w, _)) => Some(w.clone()),
+                    _ => app.wts.iter().find(|w| w.id() == app.visible).cloned(),
+                };
+                if let Some(w) = wt {
+                    app.files = Some(FilesView::new(w, wakes.sender()));
+                }
+            }
             KeyCode::Char('N') => if let Some(Row::Wt(w, _)) = app.selected() {
                 let id = w.id();
                 app.popup(tr().title_child, DIALOG, &["dialog", "child", &id]);
@@ -956,6 +1214,11 @@ pub fn welcome() -> Res<()> {
                 lines.push(Line::from(fg(format!("{g} {}", (tr().agents_wait)(waiting)), c)));
                 lines.push(Line::default());
             }
+            let lost = restore::lost().len();
+            if lost > 0 {
+                lines.push(Line::from(vec![fg("R", FOAM), fg(format!(" {}", (tr().restore_offer)(lost)), MUTED)]));
+                lines.push(Line::default());
+            }
             lines.push(keys(&[("n", tr().k_new), ("A", tr().k_add), ("?", tr().k_commands)]));
             let [_, middle, _] = Layout::vertical([Constraint::Fill(1), Constraint::Length(lines.len() as u16), Constraint::Fill(1)]).areas(f.area());
             f.render_widget(Paragraph::new(lines).centered(), middle);
@@ -994,6 +1257,10 @@ fn rail_input(wakes: &mut Wakes, binary: &Binary, focused: &mut bool, busy: bool
 pub fn rail() -> Res<()> {
     let mut term = ratatui::init();
     execute!(stdout(), event::EnableMouseCapture).ok();
+    // a card beside the terminal, which is on the terminal's own ground
+    if let Ok(me) = env::var("TMUX_PANE") {
+        tmux(&["set-option", "-p", "-t", &me, "window-style", &format!("bg={}", hex(theme::HULL))]).ok();
+    }
     let (mut sel, mut msg, mut busy) = (0usize, String::new(), None::<thread::JoinHandle<()>>);
     let (mut wakes, binary) = (Wakes::start(), Binary::now());
     let mut focused = active();
@@ -1009,7 +1276,10 @@ pub fn rail() -> Res<()> {
             busy = None;
         }
         let mut rows = vec![];
-        if let Err(e) = term.draw(|f| rows = draw_rail(f, &c, &wts, sel, focused, busy.is_some(), &msg)) {
+        if let Err(e) = term.draw(|f| {
+            rows = draw_rail(f, &c, &wts, sel, focused, busy.is_some(), &msg);
+            edge(f, f.area().x);
+        }) {
             break Err(e.to_string());
         }
         let view = |p: &Pr| popup(&format!("#{} {}", p.number, p.repo_name()), (100, 34), &["dialog", "view", &p.url]);
@@ -1033,7 +1303,7 @@ pub fn rail() -> Res<()> {
             (KeyCode::Char('k') | KeyCode::Up, _) => { sel = sel.saturating_sub(1); Ok(()) }
             (KeyCode::Tab, _) => focus(SIDEBAR),
             (KeyCode::Char('p'), _) => toggle_rail(), // closes this pane
-            (KeyCode::Char('?'), _) => popup(tr().title_commands, (136, 34), &["commands"]),
+            (KeyCode::Char('?'), _) => popup(tr().title_commands, (158, 46), &["commands"]),
             (KeyCode::Char('r'), _) if busy.is_none() => { busy = Some(thread::spawn(|| { prs::refresh().ok(); })); Ok(()) }
             (KeyCode::Char('o'), Some(p)) => open_url(&p.url),
             (KeyCode::Enter, Some(p)) => view(p),
@@ -1481,23 +1751,17 @@ pub fn commands() -> Res<()> {
         let (mut max, mut animated) = (0, false);
         let drawn = term.draw(|f| {
             let mut area = f.area();
-            // the orc goes beside the list, if there is room for both
-            if area.width as usize >= 94 + 2 + orc::W && area.height as usize >= orc::H / 2 + 4 {
+            // the mark, waving, beside the list if there is room for both, centred on its height
+            if area.width >= 94 + 8 + mark::W + 4 && area.height >= mark::H + 4 {
                 animated = true;
-                let [side, list] = Layout::horizontal([Constraint::Length(orc::W as u16 + 2), Constraint::Fill(1)]).areas(area);
+                let [side, list, _] = Layout::horizontal([Constraint::Length(mark::W + 8), Constraint::Fill(1), Constraint::Length(4)]).areas(area);
                 area = list;
-                let tick = (start.elapsed().as_millis() / 120) as usize;
-                let mut art = orc::lines(tick);
-                // typed letter by letter, then left to read
-                let text = tr().orc[tick / 60 % tr().orc.len()];
-                let typed: String = text.chars().take(tick % 60).collect();
-                let cursor = if (tick / 4).is_multiple_of(2) { "▏" } else { " " };
-                art.extend([Line::default(), Line::from(vec![fg("> ", MUTED), fg(typed, FOAM), fg(cursor, FOAM)])]);
-                f.render_widget(Paragraph::new(art), side.inner(Margin::new(1, 1)));
+                let at = Rect { x: side.x + 4, y: side.y + (side.height - mark::H) / 2, width: mark::W, height: mark::H };
+                f.render_widget(Paragraph::new(mark::waving(start.elapsed().as_secs_f32())), at);
             }
-            let [_, input, _, body, _, foot] = Layout::vertical([
-                Constraint::Length(1), Constraint::Length(1), Constraint::Length(1),
-                Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1),
+            let [_, input, _, body, _, foot, _] = Layout::vertical([
+                Constraint::Length(4), Constraint::Length(1), Constraint::Length(1),
+                Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1), Constraint::Length(4),
             ]).areas(area);
             f.render_widget(lr(input.width, vec![fg(format!(" {}: ", tr().search), MUTED), fg(format!("{query}▏"), FOAM)], vec![]).bg(WAKE), input);
             let wide = body.width >= 90;
@@ -1554,6 +1818,7 @@ pub fn commands() -> Res<()> {
 // ---------- small dialogs: each one is an `orcux dialog ...` process inside a tmux popup ----------
 
 fn dialog(body: impl FnOnce(&mut ratatui::DefaultTerminal) -> Res<()>) -> Res<()> {
+    DRAWING.store(true, Ordering::Relaxed);
     let mut term = ratatui::init();
     let res = body(&mut term);
     ratatui::restore();
@@ -1567,6 +1832,35 @@ fn draw_dialog(term: &mut ratatui::DefaultTerminal, lines: Vec<Line>, hint: &str
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), body);
         f.render_widget(Line::from(hint).fg(MUTED), foot);
     }).map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// A dialog that asks yes or no, with one of them already chosen: Enter takes it, y and n answer, arrows change it,
+/// any other key is no.
+fn draw_choice(term: &mut ratatui::DefaultTerminal, lines: Vec<Line>, yes: bool) -> Res<()> {
+    term.draw(|f| {
+        let area = f.area().inner(Margin::new(1, 0));
+        let [body, foot] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), body);
+        let button = |text: &str, on: bool| {
+            let s = format!(" {text} ");
+            if on { s.bold().fg(HULL).bg(FOAM) } else { s.fg(MUTED).bg(WAKE) }
+        };
+        let hint = vec![button(tr().k_yes, yes), " ".into(), button(tr().k_no, !yes), fg(format!("   {}", tr().hint_choose), MUTED)];
+        f.render_widget(Line::from(hint), foot);
+    }).map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// The answer to a dialog of `draw_choice`, if the key gives one.
+fn chosen(k: KeyCode, yes: &mut bool) -> Option<bool> {
+    match k {
+        KeyCode::Enter => Some(*yes),
+        KeyCode::Char('y' | 's') => Some(true),
+        KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('h' | 'l') => {
+            *yes = !*yes;
+            None
+        }
+        _ => Some(false),
+    }
 }
 
 /// Next key press, or None if something else happened (resize: redraw). Ctrl-C and Meta keys count as Esc.
@@ -1593,6 +1887,7 @@ pub fn dialog_new(repo: &Path, parent: Option<&Wt>) -> Res<()> {
     dialog(|term| {
         let repo_name = repo.file_name().unwrap_or_default().to_string_lossy().to_string();
         let (mut name, mut err) = (String::new(), String::new());
+        let untrusted = matches!(config::of(repo), Ok(config::Trust::No));
         let dirty = parent.is_some_and(|p| git(&p.path(), &["status", "--porcelain"]).is_ok_and(|s| !s.is_empty()));
         loop {
             let lines = |status: Line<'static>| {
@@ -1601,6 +1896,9 @@ pub fn dialog_new(repo: &Path, parent: Option<&Wt>) -> Res<()> {
                     l.push(Line::from(vec![tag(tr().label_parent).fg(MUTED), p.name.clone().fg(FOAM), format!("  {}", p.branch().unwrap_or_default()).fg(MUTED)]));
                 }
                 l.push(Line::from(vec![tag(tr().label_name).fg(MUTED), format!("{name}▏").into()]));
+                if untrusted {
+                    l.push(Line::from((tr().untrusted)(&tilde(repo))).fg(SIGNAL));
+                }
                 if let (Some(p), true) = (parent, dirty) {
                     l.push(Line::from((tr().parent_dirty)(&p.name)).fg(SIGNAL));
                 }
@@ -1767,12 +2065,52 @@ pub fn dialog_rm(w: &Wt) -> Res<()> {
     })
 }
 
+/// Merges a worktree and takes it away, after telling what will happen.
+pub fn dialog_merge(w: &Wt) -> Res<()> {
+    dialog(|term| {
+        draw_dialog(term, vec![Line::from(tr().loading).fg(MUTED)], "")?;
+        let mut err = String::new();
+        let plan = merge::plan(w, None, false);
+        let others = merge::with_others(w).unwrap_or_default();
+        loop {
+            let mut lines = vec![];
+            let ready = match &plan {
+                Ok(p) => {
+                    lines.push(Line::from((tr().merge_plan)(&p.branch, &p.into, p.commits as usize)).fg(FOAM));
+                    lines.push(Line::from(tr().merge_then).fg(MUTED));
+                    if !p.clashes.is_empty() {
+                        lines.push(Line::from((tr().merge_clash)(&p.into, &p.clashes.join(", "))).fg(CORAL));
+                    }
+                    p.clashes.is_empty()
+                }
+                Err(e) => {
+                    lines.push(Line::from(e.clone()).fg(CORAL));
+                    false
+                }
+            };
+            for (other, files) in &others {
+                lines.push(Line::from((tr().merge_others)(other, &files.join(", "))).fg(SIGNAL));
+            }
+            lines.extend([Line::default(), Line::from(err.clone()).fg(CORAL)]);
+            draw_dialog(term, lines, if ready && err.is_empty() { tr().hint_merge } else { tr().hint_any })?;
+            match (key()?, &plan) {
+                (None, _) => {}
+                (Some(KeyCode::Char('y')), Ok(p)) if ready && err.is_empty() => match merge::run_plan(w, p) {
+                    Ok(()) => return Ok(()),
+                    Err(e) => err = short(&e),
+                },
+                _ => return Ok(()),
+            }
+        }
+    })
+}
+
 /// Closes the visible tab (Opt+q), which may be running something.
 pub fn dialog_close() -> Res<()> {
     let (w, n) = visible()?;
     let cmd = tabs(&w.id()).into_iter().find(|p| p.tab == n).map(|p| p.cmd).unwrap_or_default();
     dialog(|term| {
-        let mut err = String::new();
+        let (mut err, mut yes) = (String::new(), true);
         loop {
             let ask = tr().ask_close;
             let lines = vec![
@@ -1781,14 +2119,14 @@ pub fn dialog_close() -> Res<()> {
                 Line::default(),
                 Line::from(err.clone()).fg(CORAL),
             ];
-            draw_dialog(term, lines, tr().hint_unregister)?;
-            match key()? {
+            draw_choice(term, lines, yes)?;
+            match key()?.and_then(|k| chosen(k, &mut yes)) {
                 None => {}
-                Some(KeyCode::Char('y')) => match close_tab(&w, n) {
+                Some(true) => match close_tab(&w, n) {
                     Ok(()) => return Ok(()),
                     Err(e) => err = short(&e),
                 },
-                Some(_) => return Ok(()),
+                Some(false) => return Ok(()),
             }
         }
     })
@@ -1812,7 +2150,7 @@ mod tests {
         // both are drawn on the row of a worktree
         let pr = [State::Failed, State::Waiting, State::Done].map(|s| look(s).0);
         for a in [Agent::Question, Agent::Permission, Agent::Failed, Agent::Done] {
-            let p = Pane { pane: "%1".into(), wt: "r/w".into(), tab: 1, on: true, busy: false, cmd: "claude".into(), agent: Some((a, 0)), mark: String::new(), title: String::new(), shell: false, activity: 0 };
+            let p = Pane { pane: "%1".into(), wt: "r/w".into(), tab: 1, on: true, busy: false, cmd: "claude".into(), agent: Some((a, 0)), mark: String::new(), title: String::new(), session: String::new(), shell: false, activity: 0 };
             assert!(!pr.contains(&look(p.look()).0), "{a:?}");
         }
     }

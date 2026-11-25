@@ -90,6 +90,8 @@ pub fn run_task(args: &[&str]) -> Res<()> {
             "--repo" => repo = it.next().copied(),
             "--parent" => parent = it.next().copied(),
             "--name" => name = it.next().copied(),
+            "--" => words.extend(it.by_ref()),
+            w if w.starts_with("--") => return Err(tr().run_usage.into()),
             w => words.push(w),
         }
     }
@@ -105,8 +107,14 @@ pub fn run_task(args: &[&str]) -> Res<()> {
         (None, Some(r)) => PathBuf::from(r),
         (None, None) => env::current_dir().map_err(|e| e.to_string())?,
     };
+    let start = |w: &Wt| -> Res<Option<String>> {
+        let file = state_dir().join("prompts").join(format!("{}.md", w.slot));
+        fs::create_dir_all(file.parent().unwrap()).map_err(|e| e.to_string())?;
+        private(&file, &task)?;
+        Ok(Some(command(&template, &file)))
+    };
     let w = match name {
-        Some(n) => create_from(&repo, n, None, parent.as_ref())?,
+        Some(n) => create_with(&repo, n, parent.as_ref(), start)?,
         None => {
             // a name of its own, even if others ask for the same at once
             let base = slug(&task);
@@ -115,18 +123,15 @@ pub fn run_task(args: &[&str]) -> Res<()> {
             let mut names = (1..).map(|i| if i == 1 { base.clone() } else { format!("{base}-{i}") }).filter(free);
             let mut tries = 0;
             loop {
-                match create_from(&repo, &names.next().unwrap(), None, parent.as_ref()) {
-                    Err(_) if tries < 4 => tries += 1,
+                match create_with(&repo, &names.next().unwrap(), parent.as_ref(), start) {
+                    // only because another took the name meanwhile
+                    Err(e) if tries < 4 && (e.contains("already exists") || load().iter().any(|w| e == (tr().exists)(&w.name) || e == (tr().id_taken)(&w.id()))) => tries += 1,
                     r => break r?,
                 }
             }
         }
     };
-    let file = state_dir().join("prompts").join(format!("{}.md", w.slot));
-    fs::create_dir_all(file.parent().unwrap()).map_err(|e| e.to_string())?;
-    private(&file, &task)?;
-    let pane = pane_at(&w, None)?;
-    type_into(&pane, &command(&template, &file))?;
+    tell_untrusted(&w);
     println!("{}  {}  ORCUX_PORT={}", w.id(), w.path().display(), w.port());
     Ok(())
 }
@@ -215,7 +220,7 @@ fn outcome(p: Option<&Pane>) -> Option<(i32, &'static str)> {
 pub fn wait(args: &[&str]) -> Res<i32> {
     let limit = flag(args, "--timeout").map(|s| s.parse::<u64>().map_err(|_| tr().wait_usage.to_string())).transpose()?;
     let names: Vec<&str> = args.iter().enumerate().filter(|(i, a)| **a != "--timeout" && !(*i > 0 && args[i - 1] == "--timeout")).map(|a| *a.1).collect();
-    if names.is_empty() {
+    if names.is_empty() || names.iter().any(|n| n.starts_with('-')) {
         return Err(tr().wait_usage.into());
     }
     let targets: Vec<(Wt, Option<u32>)> = names.iter().map(|q| target(q)).collect::<Res<_>>()?;

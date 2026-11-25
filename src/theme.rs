@@ -4,7 +4,7 @@
 use crate::*;
 use std::sync::OnceLock;
 
-pub const ABYSS: u32 = 0x0f1114; // ground: sidebar, gaps, status bar
+pub const ABYSS: u32 = 0x0f1114; // ink on badges; the ground of the sidebar, gaps and status bar is the terminal's own
 pub const HULL: u32 = 0x181b20; // cards: terminal, PR rail, dialogs
 pub const WAKE: u32 = 0x2a2f36; // selection, the pending half of a progress bar
 pub const LINE: u32 = 0x4a525c; // tree branches, dialog outlines

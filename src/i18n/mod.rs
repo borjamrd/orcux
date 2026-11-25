@@ -31,6 +31,15 @@ pub struct Text {
     pub k_hide: &'static str,
     pub k_refresh: &'static str,
     pub k_back: &'static str,
+    pub k_yes: &'static str,
+    pub k_no: &'static str,
+    pub hint_choose: &'static str,
+    pub k_diff: &'static str,
+    pub k_only_changes: &'static str,
+    pub k_all_files: &'static str,
+    pub files_reading: &'static str,
+    pub files_clean: &'static str,
+    pub files_none: &'static str,
     // dialogs
     pub title_commands: &'static str,
     pub title_new: &'static str,
@@ -48,8 +57,6 @@ pub struct Text {
     pub hint_rm: &'static str,
     pub hint_force: &'static str,
     pub hint_any: &'static str,
-    /// what the orc of the commands dialog is up to
-    pub orc: &'static [&'static str],
     pub hint_scroll: &'static str,
     pub hint_close: &'static str,
     pub hint_view: &'static str,
@@ -180,6 +187,41 @@ pub struct Text {
     pub lang_now: fn(&str, &str) -> String,
     pub lang_bad: fn(&str, &str) -> String,
     pub icons_now: fn(&str, &str) -> String,
+    pub rm_dirty: fn(&str) -> String,
+    pub rm_locked: fn(&str) -> String,
+    pub rm_submodules: fn(&str) -> String,
+    pub merge_moved: fn(&str) -> String,
+    pub merge_kept: fn(&str, &str) -> String,
+    pub config_bad: fn(usize, &str) -> String,
+    pub config_none: fn(&str) -> String,
+    pub trust_person: &'static str,
+    pub trust_ask: &'static str,
+    pub trust_no: &'static str,
+    pub untrusted: fn(&str) -> String,
+    pub teardown_failed: fn(&str, &str) -> String,
+    pub port_used: &'static str,
+    pub merge_where: &'static str,
+    pub merge_detached: &'static str,
+    pub merge_self: fn(&str) -> String,
+    pub merge_no_branch: fn(&str) -> String,
+    pub merge_dirty: fn(&str) -> String,
+    pub merge_pr: fn(&str) -> String,
+    pub merge_busy: &'static str,
+    pub merge_nothing: fn(&str, &str) -> String,
+    pub merge_clash: fn(&str, &str) -> String,
+    pub merge_others: fn(&str, &str) -> String,
+    pub merge_target_dirty: fn(&str, &str) -> String,
+    pub merge_failed: &'static str,
+    pub merge_plan: fn(&str, &str, usize) -> String,
+    pub merge_then: &'static str,
+    pub merge_done: fn(&str) -> String,
+    pub merge_usage: &'static str,
+    pub title_merge: &'static str,
+    pub hint_merge: &'static str,
+    pub conflicts_none: &'static str,
+    pub restored: fn(usize) -> String,
+    pub restore_offer: fn(usize) -> String,
+    pub restore_usage: &'static str,
     pub unknown_agent: fn(&str) -> String,
     pub agents_usage: &'static str,
     pub run_usage: &'static str,
@@ -259,7 +301,7 @@ mod tests {
         assert_eq!(p(&["", ""], &["", "", ""]), "en");
     }
 
-    /// Same commands in every language, and everything fits: sidebar 36 columns, rail 44, dialogs 60, commands 94, orc.
+    /// Same commands in every language, and everything fits: sidebar 36 columns, rail 44, dialogs 60, commands 94.
     #[test]
     fn every_language_fits() {
         let width = |s: &str| Span::raw(s).width();
@@ -273,6 +315,8 @@ mod tests {
             for k in [
                 vec![("n", t.k_new), ("A", t.k_add), ("d", t.k_delete)],
                 vec![("?", t.k_commands), ("Opt+w", t.k_switch)],
+                vec![("⏎", t.k_diff), ("c", t.k_only_changes)],
+                vec![("esc", t.k_back), ("?", t.k_commands)],
             ] {
                 assert!(keys(&k) <= 36, "{lang}: sidebar {k:?}");
             }
@@ -283,13 +327,13 @@ mod tests {
             ] {
                 assert!(keys(&k) <= 44, "{lang}: rail {k:?}");
             }
+            assert!(width(t.k_yes) + width(t.k_no) + width(t.hint_choose) + 8 <= 60, "{lang}: choice");
             for s in [t.hint_new, t.hint_pr, t.hint_unregister, t.hint_rm, t.hint_force, t.hint_any, t.kept_rm, t.kept_unregister, t.kept_close, t.kept_repo, t.hint_add, t.fetching] {
                 assert!(width(s) <= 60, "{lang}: {s}");
             }
             for s in [t.label_repo, t.label_parent, t.label_name, t.label_branch, t.label_port] {
                 assert!(width(s) <= 6, "{lang}: {s}");
             }
-            assert!(t.orc.iter().all(|s| width(s) <= crate::orc::W - 3), "{lang}: orc");
             assert!(width(&(t.counts)(99, 99)) <= 42, "{lang}: counts");
         }
     }
