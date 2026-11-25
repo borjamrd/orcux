@@ -1,6 +1,5 @@
 mod agent;
 mod i18n;
-mod logo;
 mod orc;
 mod pixels;
 mod prs;
@@ -675,9 +674,8 @@ pub fn style_ui() -> Res<()> {
     }
     let (gap, card) = (format!("bg={abyss},fg={abyss}"), format!("bg={hull}"));
     let rail = format!("#[bg={hull}#,fg={foam}#,bold]  {}  #[default]", tr().your_prs);
-    // with room for it, the sidebar draws the logo instead
-    let logo = format!("#{{&&:#{{e|>=:#{{pane_height}},{}}},#{{e|>=:#{{pane_width}},{}}}}}", logo::FROM, logo::W + 2);
-    let name = format!("#{{?{logo},,#[fg={muted}]orcux}}");
+    // the logo: an "o" of four by four dots, and the name. No commas: it goes inside a tmux conditional
+    let name = format!("#[fg={muted}]⢎⡱ #[fg={}]#[bold]orcux", hex(theme::FOAM));
     let titles = format!("#{{?#{{==:#{{@orcux}},{SIDEBAR}}},{name},#{{?#{{==:#{{@orcux}},{RAIL}}},{rail},#{{@orcux_bar}}}}}}");
     for (k, v) in [
         ("window-status-format", ""),

@@ -390,13 +390,8 @@ impl App {
 
     fn draw(&self, f: &mut Frame) {
         f.render_widget(Block::new().style(Style::new().bg(ABYSS).fg(FOAM)), f.area());
+        let [_, list, _, foot] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1), Constraint::Length(2)]).areas(f.area());
         let w = f.area().width;
-        let logo = f.area().height >= logo::FROM && w >= logo::W + 2;
-        let head = if logo { logo::H + 1 } else { 1 };
-        let [head, list, _, foot] = Layout::vertical([Constraint::Length(head), Constraint::Fill(1), Constraint::Length(1), Constraint::Length(2)]).areas(f.area());
-        if logo {
-            f.render_widget(Paragraph::new(logo::lines()), head.inner(Margin::new(1, 0)));
-        }
         let is_wt = |j: usize| matches!(self.rows.get(j), Some(Row::Wt(..)));
         let mut items = vec![];
         for (i, r) in self.rows.iter().enumerate() {
