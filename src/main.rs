@@ -482,6 +482,32 @@ pub fn focus(mark: &str) -> Res<()> {
     tmux(&["select-pane", "-t", &pane]).map(|_| ())
 }
 
+/// Watches this process's own binary, so that the sidebar and the rail do not go on running an old version.
+pub struct Binary(Option<std::time::SystemTime>);
+
+impl Binary {
+    pub fn now() -> Binary {
+        Binary(Self::modified())
+    }
+    fn modified() -> Option<std::time::SystemTime> {
+        fs::metadata(env::current_exe().ok()?).ok()?.modified().ok()
+    }
+    /// Replaced, and at least 2 s ago: the build is over.
+    pub fn replaced(&self) -> bool {
+        let m = Self::modified();
+        m.is_some() && m != self.0 && m.unwrap().elapsed().is_ok_and(|d| d.as_secs() >= 2)
+    }
+}
+
+/// Becomes the new version of itself. Only returns if it could not.
+pub fn restart_self() -> String {
+    use std::os::unix::process::CommandExt;
+    match env::current_exe() {
+        Ok(exe) => Command::new(exe).args(env::args().skip(1)).exec().to_string(),
+        Err(e) => e.to_string(),
+    }
+}
+
 /// Colors and status bar of the orcux session only; the user's other sessions keep theirs.
 pub fn style_ui() -> Res<()> {
     let t = format!("{UI}:");

@@ -182,27 +182,38 @@ fn token(login: &str) -> Option<String> {
     gh(&["auth", "token", "--user", login], Some("")).ok()
 }
 
-fn fetch() -> Res<Vec<String>> {
+/// What could be read, plus the accounts that failed with their error.
+fn fetch() -> Res<(Vec<String>, Vec<(String, String)>)> {
     let repos: Vec<(PathBuf, String)> = repos().into_iter()
         .filter_map(|p| Some((p.clone(), slug(&git(&p, &["remote", "get-url", "origin"]).ok()?)?)))
         .collect();
     if repos.is_empty() {
-        return Ok(vec![]);
+        return Ok((vec![], vec![]));
     }
     let scope: String = repos.iter().map(|r| format!(" repo:{}", r.1)).collect();
-    // Repos may belong to different accounts (work, personal): ask as each logged-in one and merge.
-    let logins = gh(&["auth", "status", "--json", "hosts", "--jq", r#".hosts["github.com"][] | select(.state == "success") | .login"#], None)?;
-    let mut logins: Vec<&str> = logins.lines().collect();
+    // Repos may belong to different accounts (work, personal): ask as each one and merge. Whatever state gh reports
+    // for them: it comes from a network check that can fail once.
+    let status = gh(&["auth", "status", "--json", "hosts", "--jq", r#".hosts["github.com"][] | [.login, .tokenSource] | @tsv"#], None)?;
+    let sources: Vec<(&str, &str)> = status.lines().map(|l| l.split_once('\t').unwrap_or((l, ""))).collect();
+    let mut logins: Vec<&str> = sources.iter().map(|s| s.0).collect();
     logins.sort();
     logins.dedup();
-    let (mut lines, mut good, mut err) = (vec![], false, tr().no_account.to_string());
+    if logins.is_empty() {
+        return Err(tr().no_account.into());
+    }
+    let (mut lines, mut failed) = (vec![], vec![]);
     for login in logins {
+        let stored = sources.iter().any(|s| s.0 == login && !s.1.ends_with("_TOKEN"));
         let token = token(login);
+        if stored && token.is_none() {
+            // without its token, gh would answer as another account: no PRs, and no error
+            failed.push((login.to_string(), tr().no_token.to_string()));
+            continue;
+        }
         let q = |who: &str| format!("is:pr is:open archived:false {who}:@me{scope}");
         let (m, r) = (format!("m={}", q("author")), format!("r={}", q("user-review-requested")));
         match gh(&["api", "graphql", "-f", &format!("query={QUERY}"), "-f", &m, "-f", &r, "--jq", JQ], token.as_deref()) {
             Ok(out) => {
-                good = true;
                 for l in out.lines() {
                     let f: Vec<&str> = l.split('\t').collect();
                     let path = f.get(1).and_then(|s| repos.iter().find(|r| r.1.eq_ignore_ascii_case(s)));
@@ -211,10 +222,18 @@ fn fetch() -> Res<Vec<String>> {
                     }
                 }
             }
-            Err(e) => err = e,
+            Err(e) => failed.push((login.to_string(), e)),
         }
     }
-    lines.sort(); // "mine" before "review": a PR seen by two accounts counts once, as mine
+    Ok((lines, failed))
+}
+
+/// The lines just read, plus the previous ones of the accounts that failed: a PR does not vanish because GitHub
+/// did not answer once. A PR seen by two accounts counts once, as mine ("mine" sorts before "review").
+fn merge(new: Vec<String>, old: &[&str], failed: &[(String, String)]) -> Vec<String> {
+    let kept = old.iter().filter(|l| l.rsplit('\t').nth(1).is_some_and(|login| failed.iter().any(|f| f.0 == login)));
+    let mut lines: Vec<String> = new.into_iter().chain(kept.map(|l| l.to_string())).collect();
+    lines.sort();
     let mut seen = vec![];
     lines.retain(|l| {
         let url = l.split('\t').nth(4).unwrap_or("").to_string();
@@ -222,7 +241,7 @@ fn fetch() -> Res<Vec<String>> {
         seen.push(url);
         new
     });
-    if good { Ok(lines) } else { Err(err) }
+    lines
 }
 
 const DETAIL: &str = "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){\
@@ -335,21 +354,27 @@ fn conflicts(repo: &Path, base: &str, head: &str) -> Vec<String> {
     String::from_utf8_lossy(&o.stdout).lines().skip(1).filter(|l| !l.is_empty()).map(String::from).collect()
 }
 
+/// The number goes up whenever the format of its lines changes: during an update, an old process and a new one
+/// must not overwrite each other's.
 fn cache_file() -> PathBuf {
-    state_dir().join("prs.tsv")
+    state_dir().join("prs.2.tsv")
 }
 
 /// Fetches and stores. A failure keeps the previous PRs and records the error.
 pub fn refresh() -> Res<()> {
     let old = fs::read_to_string(cache_file()).unwrap_or_default();
-    let text = match fetch() {
-        Ok(lines) => format!("{}\t\n{}", now(), lines.iter().map(|l| format!("{l}\n")).collect::<String>()),
-        Err(e) => {
-            let (head, rest) = old.split_once('\n').unwrap_or(("0\t", ""));
-            let at = head.split('\t').next().unwrap_or("0");
-            format!("{at}\t{}\n{rest}", e.replace(['\n', '\t'], " "))
+    let (head, rest) = old.split_once('\n').unwrap_or(("0\t", ""));
+    let before = head.split('\t').next().unwrap_or("0").to_string();
+    let old_lines: Vec<&str> = rest.lines().collect();
+    let (at, error, lines) = match fetch() {
+        Ok((new, failed)) => {
+            let at = if failed.is_empty() { now().to_string() } else { before };
+            let error = failed.first().map(|f| format!("{}: {}", f.0, f.1)).unwrap_or_default();
+            (at, error, merge(new, &old_lines, &failed))
         }
+        Err(e) => (before, e, old_lines.iter().map(|l| l.to_string()).collect()),
     };
+    let text = format!("{at}\t{}\n{}", error.replace(['\n', '\t'], " "), lines.iter().map(|l| format!("{l}\n")).collect::<String>());
     let tmp = state_dir().join(format!("prs.tsv.{}", std::process::id()));
     fs::write(&tmp, text).and_then(|_| fs::rename(&tmp, cache_file())).map_err(|e| e.to_string())
 }
@@ -395,6 +420,17 @@ mod tests {
         assert_eq!(pr(|p| { p.decision = "APPROVED".into(); p.ci = "PENDING".into() }), (Group::Going, State::Working));
         assert_eq!(pr(|p| { p.decision = "APPROVED".into(); p.ci = "SUCCESS".into() }), (Group::Ready, State::Done));
         assert_eq!(pr(|p| p.decision = "REVIEW_REQUIRED".into()), (Group::Going, State::Idle));
+    }
+
+    #[test]
+    fn a_failing_account_keeps_its_prs() {
+        let l = |kind: &str, url: &str, login: &str| format!("{kind}\tr\t1\tt\t{url}\tx\t{login}\t/p");
+        let (a, b, c) = (l("mine", "u1", "work"), l("review", "u2", "work"), l("mine", "u3", "home"));
+        let old = [a.as_str(), b.as_str(), c.as_str()];
+        let failed = [("work".to_string(), "boom".to_string())];
+        assert_eq!(merge(vec![], &old, &failed), [a.clone(), b.clone()]); // home answered: it has none now
+        assert_eq!(merge(vec![], &old, &[]), Vec::<String>::new());
+        assert_eq!(merge(vec![l("review", "u1", "home")], &old, &failed), [a, b]);
     }
 
     #[test]

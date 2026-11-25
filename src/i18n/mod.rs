@@ -127,6 +127,7 @@ pub struct Text {
     pub no_wt_agent: &'static str,
     pub nothing_to_ask: &'static str,
     pub no_account: &'static str,
+    pub no_token: &'static str,
     // command line
     pub not_repo: &'static str,
     pub no_worktree: fn(&str) -> String,

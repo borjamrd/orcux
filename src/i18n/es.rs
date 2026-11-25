@@ -169,6 +169,7 @@ pub static ES: Text = Text {
     no_wt_agent: "esta PR no tiene worktree: créalo antes con w",
     nothing_to_ask: "no hay conflictos, checks que fallen ni hilos pendientes",
     no_account: "gh: ninguna cuenta con sesión",
+    no_token: "gh no ha dado su credencial; se reintenta",
     not_repo: "no es un repo",
     no_worktree: |q| format!("no hay ningún worktree {q}"),
     no_worktree_here: "esta carpeta no es de ningún worktree",

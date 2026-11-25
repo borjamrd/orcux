@@ -386,9 +386,13 @@ pub fn run() -> Res<()> {
         rows: vec![], sel: 1, msg: String::new(), seen: HashMap::new(), live: HashMap::new(),
         prs: Cache::default(), active: true, status: Default::default(), busy: HashMap::new(),
         visible: String::new(), missing: false, bar: String::new(),    };
-    let mut last = Instant::now();
+    let (mut last, binary) = (Instant::now(), Binary::now());
     app.refresh();
     let res = loop {
+        if last.elapsed().as_millis() >= 1000 && binary.replaced() {
+            ratatui::restore();
+            break Err(restart_self());
+        }
         if last.elapsed().as_millis() >= 1000 {
             app.refresh();
             last = Instant::now();
@@ -583,7 +587,13 @@ pub fn rail() -> Res<()> {
     let mut term = ratatui::init();
     execute!(stdout(), event::EnableMouseCapture).ok();
     let (mut sel, mut msg, mut busy) = (0usize, String::new(), None::<thread::JoinHandle<()>>);
+    let binary = Binary::now();
     let res = loop {
+        if binary.replaced() {
+            execute!(stdout(), event::DisableMouseCapture).ok();
+            ratatui::restore();
+            break Err(restart_self());
+        }
         let (c, wts, focused) = (prs::cached(), load(), active());
         sel = sel.min(c.prs.len().saturating_sub(1));
         if busy.as_ref().is_some_and(|b| b.is_finished()) {
