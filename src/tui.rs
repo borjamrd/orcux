@@ -1817,6 +1817,35 @@ fn draw_dialog(term: &mut ratatui::DefaultTerminal, lines: Vec<Line>, hint: &str
     }).map(|_| ()).map_err(|e| e.to_string())
 }
 
+/// A dialog that asks yes or no, with one of them already chosen: Enter takes it, y and n answer, arrows change it,
+/// any other key is no.
+fn draw_choice(term: &mut ratatui::DefaultTerminal, lines: Vec<Line>, yes: bool) -> Res<()> {
+    term.draw(|f| {
+        let area = f.area().inner(Margin::new(1, 0));
+        let [body, foot] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), body);
+        let button = |text: &str, on: bool| {
+            let s = format!(" {text} ");
+            if on { s.bold().fg(HULL).bg(FOAM) } else { s.fg(MUTED).bg(WAKE) }
+        };
+        let hint = vec![button(tr().k_yes, yes), " ".into(), button(tr().k_no, !yes), fg(format!("   {}", tr().hint_choose), MUTED)];
+        f.render_widget(Line::from(hint), foot);
+    }).map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// The answer to a dialog of `draw_choice`, if the key gives one.
+fn chosen(k: KeyCode, yes: &mut bool) -> Option<bool> {
+    match k {
+        KeyCode::Enter => Some(*yes),
+        KeyCode::Char('y' | 's') => Some(true),
+        KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('h' | 'l') => {
+            *yes = !*yes;
+            None
+        }
+        _ => Some(false),
+    }
+}
+
 /// Next key press, or None if something else happened (resize: redraw). Ctrl-C and Meta keys count as Esc.
 fn key() -> Res<Option<KeyCode>> {
     Ok(match event::read().map_err(|e| e.to_string())? {
@@ -2064,7 +2093,7 @@ pub fn dialog_close() -> Res<()> {
     let (w, n) = visible()?;
     let cmd = tabs(&w.id()).into_iter().find(|p| p.tab == n).map(|p| p.cmd).unwrap_or_default();
     dialog(|term| {
-        let mut err = String::new();
+        let (mut err, mut yes) = (String::new(), true);
         loop {
             let ask = tr().ask_close;
             let lines = vec![
@@ -2073,14 +2102,14 @@ pub fn dialog_close() -> Res<()> {
                 Line::default(),
                 Line::from(err.clone()).fg(CORAL),
             ];
-            draw_dialog(term, lines, tr().hint_unregister)?;
-            match key()? {
+            draw_choice(term, lines, yes)?;
+            match key()?.and_then(|k| chosen(k, &mut yes)) {
                 None => {}
-                Some(KeyCode::Char('y')) => match close_tab(&w, n) {
+                Some(true) => match close_tab(&w, n) {
                     Ok(()) => return Ok(()),
                     Err(e) => err = short(&e),
                 },
-                Some(_) => return Ok(()),
+                Some(false) => return Ok(()),
             }
         }
     })

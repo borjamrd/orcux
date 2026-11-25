@@ -31,6 +31,9 @@ pub struct Text {
     pub k_hide: &'static str,
     pub k_refresh: &'static str,
     pub k_back: &'static str,
+    pub k_yes: &'static str,
+    pub k_no: &'static str,
+    pub hint_choose: &'static str,
     pub k_diff: &'static str,
     pub k_only_changes: &'static str,
     pub k_all_files: &'static str,
@@ -324,6 +327,7 @@ mod tests {
             ] {
                 assert!(keys(&k) <= 44, "{lang}: rail {k:?}");
             }
+            assert!(width(t.k_yes) + width(t.k_no) + width(t.hint_choose) + 8 <= 60, "{lang}: choice");
             for s in [t.hint_new, t.hint_pr, t.hint_unregister, t.hint_rm, t.hint_force, t.hint_any, t.kept_rm, t.kept_unregister, t.kept_close, t.kept_repo, t.hint_add, t.fetching] {
                 assert!(width(s) <= 60, "{lang}: {s}");
             }
