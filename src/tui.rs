@@ -853,8 +853,9 @@ fn folds(p: &Pr, d: &Detail, w: u16) -> Vec<Fold> {
     };
     let checks = Fold {
         title: tr().s_checks,
-        summary: [count("✕", d.failing.len(), CORAL), count("●", d.pending.len(), CURRENT), count("✓", p.ok as usize, KELP)].into_iter().flatten().collect(),
-        lines: d.failing.iter().map(|s| item("✕", CORAL, s)).chain(d.pending.iter().map(|s| item("●", CURRENT, s))).collect(),
+        summary: [count("✕", d.failing.len(), CORAL), count("●", d.pending.len(), CURRENT), count("○", d.optional.len(), MUTED), count("✓", p.ok as usize, KELP)].into_iter().flatten().collect(),
+        lines: d.failing.iter().map(|s| item("✕", CORAL, s)).chain(d.pending.iter().map(|s| item("●", CURRENT, s)))
+            .chain(d.optional.iter().map(|s| item("○", MUTED, &(tr().optional)(s)))).collect(),
         blocks: !d.failing.is_empty(),
     };
     let mut lines = vec![];

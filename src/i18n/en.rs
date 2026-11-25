@@ -165,6 +165,7 @@ pub static EN: Text = Text {
     fork: "PR from a fork: its branch is not on origin",
     more: |n| format!("… and {n} more"),
     s_checks: "Checks",
+    optional: |name| format!("{name} (fails, but is optional)"),
     s_threads: "Threads",
     s_conflicts: "Conflicts",
     none: "none",

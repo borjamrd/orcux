@@ -119,6 +119,8 @@ pub struct Text {
     pub fork: &'static str,
     pub more: fn(usize) -> String,
     pub s_checks: &'static str,
+    /// a check that fails but blocks nothing
+    pub optional: fn(&str) -> String,
     pub s_threads: &'static str,
     pub s_conflicts: &'static str,
     pub none: &'static str,

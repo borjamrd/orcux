@@ -165,6 +165,7 @@ pub static ES: Text = Text {
     fork: "PR de un fork: su rama no está en origin",
     more: |n| format!("… y {n} más"),
     s_checks: "Checks",
+    optional: |name| format!("{name} (falla, pero es opcional)"),
     s_threads: "Hilos",
     s_conflicts: "Conflictos",
     none: "ninguno",
