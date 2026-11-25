@@ -463,7 +463,7 @@ pub fn run() -> Res<()> {
             KeyCode::Char('q') => { tmux(&["detach-client"]).ok(); }
             KeyCode::Char('j') | KeyCode::Down => app.sel = (app.sel + 1).min(app.rows.len().saturating_sub(1)),
             KeyCode::Char('k') | KeyCode::Up => app.sel = app.sel.saturating_sub(1),
-            KeyCode::Char('?') => app.popup(tr().title_commands, (148, 64), &["commands"]),
+            KeyCode::Char('?') => app.popup(tr().title_commands, (148, 34), &["commands"]),
             KeyCode::Char('p') => if let Err(e) = toggle_rail() {
                 app.error(&e);
             },
@@ -705,7 +705,7 @@ pub fn rail() -> Res<()> {
             (KeyCode::Char('k') | KeyCode::Up, _) => { sel = sel.saturating_sub(1); Ok(()) }
             (KeyCode::Tab, _) => focus(SIDEBAR),
             (KeyCode::Char('p'), _) => toggle_rail(), // closes this pane
-            (KeyCode::Char('?'), _) => popup(tr().title_commands, (148, 64), &["commands"]),
+            (KeyCode::Char('?'), _) => popup(tr().title_commands, (148, 34), &["commands"]),
             (KeyCode::Char('r'), _) if busy.is_none() => { busy = Some(thread::spawn(|| { prs::refresh().ok(); })); Ok(()) }
             (KeyCode::Char('o'), Some(p)) => open_url(&p.url),
             (KeyCode::Enter, Some(p)) => view(p),
@@ -1117,20 +1117,46 @@ pub fn dialog_view(url: &str) -> Res<()> {
     })
 }
 
+/// Lower case and without accents, to search: "pestana" finds "pestaña".
+fn plain(s: &str) -> String {
+    s.to_lowercase().chars().map(|c| match c {
+        'á' | 'à' | 'ä' | 'â' => 'a',
+        'é' | 'è' | 'ë' | 'ê' => 'e',
+        'í' | 'ì' | 'ï' | 'î' => 'i',
+        'ó' | 'ò' | 'ö' | 'ô' => 'o',
+        'ú' | 'ù' | 'ü' | 'û' => 'u',
+        'ñ' => 'n',
+        'ç' => 'c',
+        c => c,
+    }).collect()
+}
+
+/// The commands that have every word of the search in their group, usage or description.
+fn search_commands(query: &str) -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+    let query = plain(query);
+    tr().commands.iter().map(|(group, cmds)| {
+        let hit = |c: &&(&str, &str)| {
+            let text = plain(&format!("{group} {} {}", c.0, c.1));
+            query.split_whitespace().all(|w| text.contains(w))
+        };
+        (*group, cmds.iter().filter(hit).copied().collect::<Vec<_>>())
+    }).filter(|g| !g.1.is_empty()).collect()
+}
+
 /// The commands dialog (`orcux commands`, shown in a tmux popup by the sidebar's `?`).
 pub fn commands() -> Res<()> {
     let mut term = ratatui::init();
-    let (mut top, start) = (0u16, Instant::now());
+    execute!(stdout(), event::EnableMouseCapture).ok();
+    let (mut query, mut top, start) = (String::new(), 0u16, Instant::now());
     let res = loop {
         let (mut max, mut animated) = (0, false);
         let drawn = term.draw(|f| {
-            let [body, foot] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(f.area());
-            let mut body = body;
+            let mut area = f.area();
             // the orc goes beside the list, if there is room for both
-            if body.width as usize >= 94 + 2 + orc::W && body.height as usize >= orc::H / 2 + 3 {
+            if area.width as usize >= 94 + 2 + orc::W && area.height as usize >= orc::H / 2 + 4 {
                 animated = true;
-                let [list, side] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(orc::W as u16 + 2)]).areas(body);
-                body = list;
+                let [list, side] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(orc::W as u16 + 2)]).areas(area);
+                area = list;
                 let tick = (start.elapsed().as_millis() / 120) as usize;
                 let mut art = orc::lines(tick);
                 // typed letter by letter, then left to read
@@ -1140,14 +1166,19 @@ pub fn commands() -> Res<()> {
                 art.extend([Line::default(), Line::from(vec![fg("> ", KELP), fg(typed, FOAM), fg(cursor, FOAM)])]);
                 f.render_widget(Paragraph::new(art), side.inner(Margin::new(1, 1)));
             }
+            let [_, input, _, body, _, foot] = Layout::vertical([
+                Constraint::Length(1), Constraint::Length(1), Constraint::Length(1),
+                Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1),
+            ]).areas(area);
+            f.render_widget(lr(input.width, vec![fg(format!(" {}: ", tr().search), MUTED), fg(format!("{query}▏"), FOAM)], vec![]).bg(WAKE), input);
             let wide = body.width >= 90;
             let mut lines: Vec<Line> = vec![];
-            for (group, cmds) in tr().commands {
+            for (group, cmds) in search_commands(&query) {
                 if !lines.is_empty() {
                     lines.push(Line::default());
                 }
-                lines.push(Line::from(*group).bold().fg(MUTED));
-                for (usage, desc) in *cmds {
+                lines.push(Line::from(format!(" {group}")).bold().fg(MUTED));
+                for (usage, desc) in cmds {
                     if wide {
                         lines.push(Line::from(vec![format!(" {usage:<40} ").fg(FOAM), desc.fg(MUTED)]));
                     } else {
@@ -1156,21 +1187,37 @@ pub fn commands() -> Res<()> {
                     }
                 }
             }
+            if lines.is_empty() {
+                lines.push(Line::from(format!(" {}", tr().no_match)).fg(MUTED));
+            }
             max = (lines.len() as u16).saturating_sub(body.height);
             top = top.min(max);
             f.render_widget(Paragraph::new(lines).scroll((top, 0)), body);
-            f.render_widget(Line::from(if max > 0 { tr().hint_scroll } else { tr().hint_close }).fg(MUTED), foot);
+            f.render_widget(Line::from(format!(" {}", if max > 0 { tr().hint_scroll } else { tr().hint_close })).fg(MUTED), foot);
         });
         if let Err(e) = drawn {
             break Err(e.to_string());
         }
         match poll_input(if animated { 60 } else { 500 }) {
-            Some(Input::Key(KeyCode::Esc | KeyCode::Char('q' | '?'))) => break Ok(()),
-            Some(Input::Key(KeyCode::Char('j') | KeyCode::Down)) => top = (top + 1).min(max),
-            Some(Input::Key(KeyCode::Char('k') | KeyCode::Up)) => top = top.saturating_sub(1),
+            Some(Input::Key(KeyCode::Esc)) if !query.is_empty() => query.clear(),
+            Some(Input::Key(KeyCode::Esc)) => break Ok(()),
+            Some(Input::Key(KeyCode::Char('?'))) if query.is_empty() => break Ok(()), // as it opened
+            Some(Input::Key(KeyCode::Char(c))) => {
+                query.push(c);
+                top = 0;
+            }
+            Some(Input::Key(KeyCode::Backspace)) => {
+                query.pop();
+                top = 0;
+            }
+            Some(Input::Key(KeyCode::Down) | Input::Wheel { down: true }) => top = (top + 1).min(max),
+            Some(Input::Key(KeyCode::Up) | Input::Wheel { down: false }) => top = top.saturating_sub(1),
+            Some(Input::Key(KeyCode::PageDown)) => top = (top + 10).min(max),
+            Some(Input::Key(KeyCode::PageUp)) => top = top.saturating_sub(10),
             _ => {} // next frame, or a resize
         }
     };
+    execute!(stdout(), event::DisableMouseCapture).ok();
     ratatui::restore();
     res
 }
@@ -1434,6 +1481,10 @@ mod tests {
     #[test]
     fn names_and_cuts() {
         assert_eq!((program("2.1.332"), program("zsh"), program("python3.12")), ("claude", "zsh", "python3.12"));
+        assert_eq!(plain("Pestaña ÚNICA"), "pestana unica");
+        assert!(search_commands("").len() == tr().commands.len() && search_commands("zzz").is_empty());
+        let found: Vec<_> = search_commands("IMPORT orcux").into_iter().flat_map(|g| g.1).collect();
+        assert!(!found.is_empty() && found.iter().all(|c| plain(&format!("{} {}", c.0, c.1)).contains("import")));
         assert_eq!(wrap("uno dos tres", 7), ["uno dos", "tres"]);
         assert_eq!(wrap("abcdefgh ij", 4), ["abcd", "efgh", "ij"]);
         assert_eq!(wrap("", 4), [""]);

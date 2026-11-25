@@ -99,7 +99,7 @@ pub static EN: Text = Text {
     hint_force: "D force (loses the changes)  any other key: no",
     hint_any: "press any key to close",
     orc: &["no idea what I type, but it compiles…", "straight to main, it is 3 AM…", "works on my machine", "deleting node_modules, just in case…", "the duck says it is the cache", "one last commit and off to bed"],
-    hint_scroll: "j/k scroll  esc close",
+    hint_scroll: "↑/↓ scroll  esc close",
     hint_close: "esc close",
     hint_view: "↑/↓ section   space open or close   j/k scroll",
     label_repo: "Repo",
