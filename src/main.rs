@@ -901,7 +901,7 @@ pub fn style_ui() -> Res<()> {
     let (abyss, hull, line, foam) = ("default".to_string(), hex(theme::HULL), hex(theme::LINE), hex(theme::FOAM));
     // one row above the panes, drawn whole by tab_bar(): pane titles have two cells of border that cannot be drawn
     let status = format!("bg={abyss},fg={foam}");
-    for (k, v) in [("status", "on"), ("status-position", "top"), ("status-format[0]", "#{@orcux_bar}"), ("status-style", status.as_str()), ("mouse", "on")] {
+    for (k, v) in [("status", "on"), ("status-position", "top"), ("status-format[0]", "#{@orcux_bar}"), ("status-style", status.as_str()), ("status-bg", "default"), ("status-fg", "default"), ("mouse", "on")] {
         tmux(&["set-option", "-t", &t, k, v]).ok();
     }
     let gap = format!("bg={abyss},fg={abyss}");

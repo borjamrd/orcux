@@ -71,6 +71,7 @@ Model:
 - `run()` does `trim_end()`, which eats the trailing `\t` of the last line when `#{@orcux}` is empty. Parse with a default, never with `split_once(...)?`.
 - `send` waits 150 ms between the text and Enter: TUIs like claude treat text+Enter in one burst as a paste.
 - Pane titles (`pane-border-status`) cannot hold the frame or the tabs: tmux draws two cells of border before each one, a click on them gives no mouse event at all, and `MouseDown1Border` has no `mouse_x`. Only the status line has ranges (`range=user|X`): that is why the top row is the status line.
+- tmux applies `status-bg`/`status-fg` over `status-style` when they are not `default`: a `set -g status-bg black` in the user's config painted the top row. The session sets both to `default`.
 - `display-popup` fails if it is larger than the client (no clamping), so `popup()` caps it to the client size. A detach closes the popup with a non-zero exit and empty stderr: not an error.
 - tmux scales panes proportionally when the client attaches or resizes: `ensure_ui` pins the sidebar to 36 columns with a `window-resized` hook (dragging the border by hand still works).
 - `orcux dialog view <url>` is the dialog of one PR (Enter or click in the rail): it loads its details in a thread. Read-only towards GitHub. `a` pastes a one-line prompt into the worktree's agent WITHOUT Enter and as a bracketed paste: keys could answer an open permission menu. Text by other people is stripped of control characters and quoted as data.
