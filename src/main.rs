@@ -1,3 +1,4 @@
+mod prs;
 mod tui;
 
 use std::{env, fs, path::{Path, PathBuf}, process::Command, thread, time::Duration};
@@ -8,6 +9,11 @@ pub const UI: &str = "=orcux"; // `=` = exact match; plain "orcux" would prefix-
 const UI_NAME: &str = "orcux";
 const BG: &str = "orcux-bg"; // hidden session: one window per worktree terminal
 pub const SIDEBAR: &str = "__sidebar";
+pub const RAIL: &str = "__prs"; // right pane: pull requests
+/// Opt+w: what macOS types for it on the Spanish and US layouts, and what terminals with Option as Meta send.
+// ponytail: other layouts type other characters; make it a setting if someone needs them.
+pub const SWITCH_KEYS: [&str; 3] = ["æ", "∑", "M-w"];
+const RAIL_MIN: u32 = 140; // narrower windows start with the rail hidden, to leave the terminal 60 columns
 
 /// Single source for `orcux help` and the `?` dialog: every new command or shortcut gets its line here.
 pub const COMMANDS: &[(&str, &[(&str, &str)])] = &[
@@ -16,8 +22,20 @@ pub const COMMANDS: &[(&str, &[(&str, &str)])] = &[
         ("n", "nuevo worktree en el repo seleccionado"),
         ("d", "borrar el worktree seleccionado"),
         ("j / k, ↓ / ↑", "moverse por la lista"),
+        ("p", "mostrar u ocultar el panel de PRs"),
+        ("tab", "pasar al panel de PRs"),
         ("?", "ver los comandos disponibles"),
         ("q", "salir (los terminales siguen vivos)"),
+    ]),
+    ("En cualquier panel", &[
+        ("Opt+w", "cambiar de worktree"),
+    ]),
+    ("Panel de PRs", &[
+        ("⏎", "ir al worktree de la PR"),
+        ("w", "crear su worktree, si no existe"),
+        ("o", "abrir la PR en el navegador"),
+        ("r", "actualizar ahora"),
+        ("tab", "volver al sidebar"),
     ]),
     ("Terminal", &[
         ("orcux", "abrir la interfaz (sidebar + terminal)"),
@@ -25,9 +43,11 @@ pub const COMMANDS: &[(&str, &[(&str, &str)])] = &[
         ("orcux rm <wt> [--force]", "borrar el worktree (conserva la rama)"),
         ("orcux ls", "listar los worktrees"),
         ("orcux show <wt>", "mostrar <wt> en la interfaz"),
+        ("orcux switch", "elegir worktree en una lista (Opt+w)"),
         ("orcux send <wt> <texto...>", "escribir texto + Enter en su terminal"),
         ("orcux read <wt> [líneas]", "leer el final de su terminal (40 por defecto)"),
         ("orcux env [wt]", "exports ORCUX_* (por defecto, el del cwd)"),
+        ("orcux prs", "listar tus PRs y las que esperan tu revisión"),
         ("orcux repo add [ruta]", "registrar un repo en el sidebar"),
         ("orcux commands", "abrir esta lista de comandos"),
         ("orcux help", "imprimir esta ayuda"),
@@ -86,7 +106,7 @@ pub fn home() -> PathBuf {
     PathBuf::from(env::var("HOME").expect("HOME"))
 }
 
-fn state_dir() -> PathBuf {
+pub fn state_dir() -> PathBuf {
     let d = home().join(".local/state/orcux");
     fs::create_dir_all(&d).ok();
     d
@@ -110,7 +130,7 @@ pub fn tmux(args: &[&str]) -> Res<String> {
     run("tmux", args, None)
 }
 
-fn git(dir: &Path, args: &[&str]) -> Res<String> {
+pub fn git(dir: &Path, args: &[&str]) -> Res<String> {
     run("git", args, Some(dir))
 }
 
@@ -172,13 +192,24 @@ pub fn find(q: Option<&str>) -> Res<Wt> {
 
 // ---------- worktrees ----------
 
+pub fn free_slot(wts: &[Wt]) -> u32 {
+    (1..).find(|s| !wts.iter().any(|w| w.slot == *s)).unwrap()
+}
+
+/// Worktree for a PR's branch. Fetches it first: an unknown branch would otherwise start from origin/HEAD.
+pub fn create_for_pr(repo: &Path, branch: &str) -> Res<Wt> {
+    let spec = format!("+refs/heads/{branch}:refs/remotes/origin/{branch}");
+    run("env", &["GIT_TERMINAL_PROMPT=0", "git", "fetch", "origin", &spec], Some(repo))?;
+    create(repo, branch, None)
+}
+
 pub fn create(repo: &Path, name: &str, cmd: Option<&str>) -> Res<Wt> {
     let repo = add_repo(repo)?;
     let mut wts = load();
     if wts.iter().any(|w| w.repo == repo && w.name == name) {
         return Err(format!("{name} already exists"));
     }
-    let slot = (1..).find(|s| !wts.iter().any(|w| w.slot == *s)).unwrap();
+    let slot = free_slot(&wts);
     let wt = Wt { repo: repo.clone(), name: name.into(), slot };
     let path = wt.path();
     let p = path.to_str().ok_or("non-utf8 path")?;
@@ -305,23 +336,124 @@ pub fn ensure_ui() -> Res<()> {
             p
         }
     };
-    if ui_panes().len() < 2 {
+    let missing = terminal_pane().is_none();
+    if missing {
         tmux(&["split-window", "-h", "-d", "-t", &side, "-c", &home])?;
-        tmux(&["resize-pane", "-t", &side, "-x", "36"])?;
+    }
+    pin(missing)
+}
+
+fn ui_pane(mark: &str) -> Option<String> {
+    ui_panes().into_iter().find(|p| p.1 == mark).map(|p| p.0)
+}
+
+/// (pane, marker) of the pane that shows a worktree's terminal, or the placeholder shell.
+pub fn terminal_pane() -> Option<(String, String)> {
+    ui_panes().into_iter().find(|p| p.1 != SIDEBAR && p.1 != RAIL)
+}
+
+/// tmux scales panes proportionally when the window changes size (e.g. on attach): keep both side panes fixed.
+/// A hook, not their own resize events, so that dragging a border by hand still works. `now` also resizes at once.
+fn pin(now: bool) -> Res<()> {
+    let Some(side) = ui_pane(SIDEBAR) else { return Ok(()) };
+    let mut cmds = vec![format!("resize-pane -t {side} -x 36")];
+    cmds.extend(ui_pane(RAIL).map(|r| format!("resize-pane -t {r} -x 44")));
+    tmux(&["set-hook", "-w", "-t", &side, "window-resized", &cmds.join(" ; ")])?;
+    if now {
+        for c in &cmds {
+            tmux(&c.split(' ').collect::<Vec<_>>())?;
+        }
     }
     Ok(())
+}
+
+/// Opens or closes the rail: what the user chose with `p`, else whether it fits. Only the sidebar calls this
+/// on its own (one owner, so it is never opened twice).
+pub fn sync_rail() -> Res<()> {
+    let Some(side) = ui_pane(SIDEBAR) else { return Ok(()) };
+    let info = tmux(&["display-message", "-p", "-t", &side, "#{window_width} #{@orcux_prs}"])?;
+    let (width, choice) = info.split_once(' ').unwrap_or((&info, ""));
+    let want = match choice {
+        "on" => true,
+        "off" => false,
+        _ => width.parse().is_ok_and(|w: u32| w >= RAIL_MIN),
+    };
+    match (want, ui_pane(RAIL)) {
+        (true, None) => {
+            let exe = env::current_exe().map_err(|e| e.to_string())?;
+            let cmd = format!("'{}' rail", exe.display());
+            let p = tmux(&["split-window", "-hf", "-d", "-l", "44", "-t", &side, "-P", "-F", "#{pane_id}", &cmd])?;
+            tmux(&["set-option", "-p", "-t", &p, "@orcux", RAIL])?;
+            pin(true)
+        }
+        (false, Some(p)) => {
+            tmux(&["set-hook", "-w", "-u", "-t", &side, "window-resized"])?;
+            tmux(&["kill-pane", "-t", &p])?;
+            pin(true)
+        }
+        _ => Ok(()),
+    }
+}
+
+pub fn toggle_rail() -> Res<()> {
+    let choice = if ui_pane(RAIL).is_some() { "off" } else { "on" };
+    tmux(&["set-option", "-t", &format!("{UI}:"), "@orcux_prs", choice])?;
+    sync_rail()
+}
+
+/// Moves the focus to the pane with that marker, or to the terminal when it is not open.
+pub fn focus(mark: &str) -> Res<()> {
+    let pane = ui_pane(mark).or_else(|| terminal_pane().map(|p| p.0)).ok_or("no pane")?;
+    tmux(&["select-pane", "-t", &pane]).map(|_| ())
+}
+
+/// Colors and status bar of the orcux session only; the user's other sessions keep theirs.
+pub fn style_ui() -> Res<()> {
+    let t = format!("{UI}:");
+    for (k, v) in [("status", "on"), ("status-style", "bg=#131d22,fg=#e8f0f2"), ("status-left-length", "120"), ("status-right-length", "80")] {
+        tmux(&["set-option", "-t", &t, k, v])?;
+    }
+    for (k, v) in [
+        ("window-status-format", ""),
+        ("window-status-current-format", ""),
+        ("pane-border-style", "fg=#5f7781"),
+        ("pane-active-border-style", "fg=#93a8b0"),
+    ] {
+        tmux(&["set-option", "-w", "-t", &t, k, v])?;
+    }
+    // Key tables are shared by every session: outside orcux the key goes on to the program, as if not bound.
+    let exe = env::current_exe().map_err(|e| e.to_string())?;
+    let open = format!(
+        "display-popup -E -T ' Worktrees ' -w 60% -h 50% -s 'bg=#131d22,fg=#e8f0f2' -S 'fg=#5f7781' \"'{}' switch\"",
+        exe.display()
+    );
+    for k in SWITCH_KEYS {
+        tmux(&["bind-key", "-n", k, "if-shell", "-F", "#{==:#{session_name},orcux}", &open, &format!("send-keys {k}")])?;
+    }
+    Ok(())
+}
+
+pub fn set_status(left: &str, right: &str) {
+    let t = format!("{UI}:");
+    tmux(&["set-option", "-t", &t, "status-left", left]).ok();
+    tmux(&["set-option", "-t", &t, "status-right", right]).ok();
+}
+
+pub fn open_url(url: &str) -> Res<()> {
+    run(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }, &[url], None).map(|_| ())
 }
 
 pub fn show(w: &Wt) -> Res<()> {
     ensure_ui()?;
     let pane = ensure_pane(w)?;
-    let (right, mark) = ui_panes().into_iter().find(|p| p.1 != SIDEBAR).ok_or("no terminal pane")?;
+    let (right, mark) = terminal_pane().ok_or("no terminal pane")?;
     if pane != right {
         tmux(&["swap-pane", "-d", "-s", &pane, "-t", &right])?;
         if mark.is_empty() {
             tmux(&["kill-pane", "-t", &right])?; // placeholder shell, not a worktree
         }
     }
+    touch_recent(&w.id());
     tmux(&["select-pane", "-t", &pane]).map(|_| ())
 }
 
@@ -333,9 +465,43 @@ pub fn popup(title: &str, want: (u32, u32), args: &[&str]) -> Res<()> {
     let (w, h) = size.split_once(' ').unwrap_or_default();
     let fit = |have: &str, want: u32| have.parse().map_or(want, |n: u32| n.min(want)).to_string();
     let (w, h, title) = (fit(w, want.0), fit(h, want.1), format!(" {title} "));
-    let mut a = vec!["display-popup", "-E", "-T", &title, "-w", &w, "-h", &h, exe.to_str().ok_or("non-utf8 path")?];
+    let mut a = vec!["display-popup", "-E", "-s", "bg=#131d22,fg=#e8f0f2", "-S", "fg=#5f7781", "-T", &title, "-w", &w, "-h", &h, exe.to_str().ok_or("non-utf8 path")?];
     a.extend(args); // several args = exec without a shell, so no quoting
     tmux(&a).map(|_| ())
+}
+
+fn recent() -> Vec<String> {
+    fs::read_to_string(state_dir().join("recent")).unwrap_or_default().lines().map(String::from).collect()
+}
+
+fn touch_recent(id: &str) {
+    let mut r = recent();
+    r.retain(|x| x != id);
+    r.insert(0, id.into());
+    r.truncate(50);
+    fs::write(state_dir().join("recent"), r.join("\n")).ok();
+}
+
+/// Every worktree: the visible one first, then by last use.
+pub fn by_recent(visible: &str) -> Vec<Wt> {
+    let r = recent();
+    let mut wts = load();
+    wts.sort_by_key(|w| {
+        let id = w.id();
+        (id != visible, r.iter().position(|x| *x == id).unwrap_or(usize::MAX))
+    });
+    wts
+}
+
+/// Marks a worktree's pane as working or not, for other processes (only the sidebar watches the screens).
+pub fn set_busy(pane: &str, busy: bool) {
+    tmux(&["set-option", "-p", "-t", pane, "@orcux_busy", if busy { "1" } else { "0" }]).ok();
+}
+
+pub fn busy_ids() -> Vec<String> {
+    tmux(&["list-panes", "-a", "-F", "#{@orcux}\t#{@orcux_busy}"]).unwrap_or_default().lines()
+        .filter_map(|l| l.strip_suffix("\t1").map(String::from))
+        .collect()
 }
 
 fn attach() -> Res<()> {
@@ -365,9 +531,13 @@ fn cli(a: &[&str]) -> Res<()> {
     match a {
         [] => attach(),
         ["sidebar"] => tui::run(),
+        ["rail"] => tui::rail(),
+        ["prs"] => prs::print(),
+        ["switch"] => tui::switch(),
         ["commands"] => tui::commands(),
         ["dialog", "new", repo] => tui::dialog_new(Path::new(repo)),
         ["dialog", "rm", id] => tui::dialog_rm(&find(Some(id))?),
+        ["dialog", "pr", repo, branch, label] => tui::dialog_pr(Path::new(repo), branch, label),
         ["dialog", "error", text] => tui::dialog_error(text),
         ["new", name, rest @ ..] => {
             let repo = flag(rest, "--repo").map(PathBuf::from).unwrap_or(env::current_dir().map_err(|e| e.to_string())?);

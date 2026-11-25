@@ -10,19 +10,23 @@ It looks like herdr (herdr.dev: Rust + ratatui + its own VT), but orcux has work
 ## Commands
 
 - `cargo build --release`: the binary is `target/release/orcux`, linked from `~/.local/bin/orcux`.
+- `cargo test`: PR classification and parsing.
 - `orcux help`: lists the subcommands. Same table (`COMMANDS` in `main.rs`) feeds the sidebar's `?` dialog (`orcux commands` in a tmux popup): every new command or shortcut goes there. UI text is in Spanish for now.
 
-## Architecture (2 files, 1 dependency: ratatui)
+## Architecture (3 files, 1 dependency: ratatui)
 
 - `src/main.rs`: CLI, git, tmux and state.
-- `src/tui.rs`: the sidebar (`orcux sidebar`, run inside the UI's left pane).
+- `src/tui.rs`: the sidebar (`orcux sidebar`, the UI's left pane), the PR rail (`orcux rail`, right pane) and the dialogs. Colors are the constants at the top (design system "orcux").
+- `src/prs.rs`: open PRs of the registered repos, read-only, through `gh` (JSON reduced to TSV with `--jq`, so no JSON crate).
 
 Model:
-- tmux session `orcux` holds 1 window: the sidebar pane on the left and the visible terminal on the right.
+- tmux session `orcux` holds 1 window: sidebar (36 columns), visible terminal, and the PR rail (44 columns). The rail is shown by default from 140 columns; `p` overrides that in the session option `@orcux_prs`.
+- Only the sidebar process opens the rail on its own, fetches PRs (every 60 s, into `~/.local/state/orcux/prs.tsv`) and writes the tmux status bar. Session styling is limited to the `orcux` session.
 - tmux session `orcux-bg` holds one window per worktree, with its terminal.
-- Each worktree pane carries the pane option `@orcux=<repo>/<name>`; the sidebar carries `@orcux=__sidebar`. Panes are always found through that marker, never by index.
+- Each worktree pane carries the pane option `@orcux=<repo>/<name>`; the sidebar carries `@orcux=__sidebar` and the rail `@orcux=__prs`. Panes are always found through that marker, never by index.
 - Showing a worktree = `swap-pane` between its pane and the right-hand one. If the one leaving is the placeholder (empty `@orcux`), it is killed.
-- State in plain files: `~/.local/state/orcux/worktrees.tsv` (repo, name, slot) and `~/.local/state/orcux/repos`.
+- State in plain files in `~/.local/state/orcux/`: `worktrees.tsv` (repo, name, slot), `repos`, `recent` (ids by last `show`) and `prs.tsv` (cache).
+- Opt+w opens `orcux switch` in a popup. Terminal.app cannot send Cmd keys, and without Option as Meta it types a character (`æ` on the Spanish layout), so those characters are bound in the root table (`SWITCH_KEYS`, set by the sidebar at start). tmux key tables are global: the binding checks the session name and passes the key on elsewhere. The sidebar marks working panes with `@orcux_busy`, for processes that do not watch screens.
 - Prompts and errors are popups, never sidebar text: the sidebar calls `popup()`, which runs `orcux dialog new|rm|error` (internal) in a centered `display-popup` and blocks until it closes.
 - Worktrees go in `~/orcux/<repo>/<name>`. Each pane gets `ORCUX_PORT=10000+slot*100`, `ORCUX_ID`, `ORCUX_SLOT` and `COMPOSE_PROJECT_NAME` via `tmux -e`.
 - `.worktreeinclude` in the main checkout is copied into the new worktree (same contract as Orca; literal paths only, globs skipped).
@@ -34,6 +38,9 @@ Model:
 - `run()` does `trim_end()`, which eats the trailing `\t` of the last line when `#{@orcux}` is empty. Parse with a default, never with `split_once(...)?`.
 - `send` waits 150 ms between the text and Enter: TUIs like claude treat text+Enter in one burst as a paste.
 - `display-popup` fails if it is larger than the client (no clamping), so `popup()` caps it to the client size. A detach closes the popup with a non-zero exit and empty stderr: not an error.
+- tmux scales panes proportionally when the client attaches or resizes: `ensure_ui` pins the sidebar to 36 columns with a `window-resized` hook (dragging the border by hand still works).
+- PRs are asked once per logged-in `gh` account (token passed by environment, the active account is never switched) because repos belong to different accounts.
+- `w` on a PR fetches its branch before creating: an unknown branch would start from `origin/HEAD`.
 - `rm` runs `git worktree remove` BEFORE killing the pane, so that a dirty worktree fails without losing the terminal.
 
 ## Testing without touching the user's real tmux/worktrees
