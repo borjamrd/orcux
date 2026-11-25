@@ -823,6 +823,12 @@ pub fn run() -> Res<()> {
     execute!(stdout(), event::EnableMouseCapture).ok();
     let mut wakes = Wakes::start();
     style_ui().ok();
+    // the window's style fills panes with the card; the sidebar is on the terminal's own ground
+    if let Ok(me) = env::var("TMUX_PANE") {
+        for style in ["window-style", "window-active-style"] {
+            tmux(&["set-option", "-p", "-t", &me, style, "bg=default"]).ok();
+        }
+    }
     thread::spawn(|| loop {
         let last = Instant::now();
         prs::refresh().ok(); // errors go into the cache, the rail shows them
