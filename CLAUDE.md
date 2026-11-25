@@ -18,7 +18,9 @@ It does not emulate terminals: **ratatui draws the sidebar and tmux runs the ter
 - `src/main.rs`: CLI, git, tmux and state.
 - `src/tui.rs`: the sidebar (`orcux sidebar`, the UI's left pane), the PR rail (`orcux rail`, right pane) and the dialogs. Colors come from `src/theme.rs` (design system "orcux"), also for tmux styles.
 - `src/i18n/`: every text the user sees, one file per language (`en`, `es`). Never write a user-facing literal elsewhere: add a field to `Text` (a missing translation does not compile) and use `tr().field`; texts with data are functions. Language: `ORCUX_LANG`, then `orcux lang <code>` (saved in `lang`), then the system, then English. The `every_language_fits` test checks widths.
-- `src/orc.rs`: the animated orc of the commands dialog (from 144 columns and 25 rows). Pixel layers with lower half blocks `▄`: `▀` leaves stripes in fonts that draw it shorter than the cell.
+- `src/orc.rs`: the animated orc of the commands dialog, at its left (from 134 columns and 22 rows): only the bust, without a background.
+- `src/mark.rs`: the logo, the "o" of Fraunces Bold in braille dots with a gradient (`DEEP`, `CURRENT`, `FOAM`). Shown by `orcux welcome` (internal), the placeholder pane when no worktree is shown: it passes its keys to the sidebar.
+- `src/pixels.rs`: draws the orc, in shades of the text color, with lower half blocks `▄`: `▀` leaves stripes in fonts that draw it shorter than the cell.
 - `src/agent.rs`: what Claude Code agents say about themselves (working, question, permission, failed, done, idle), through hooks.
 - `src/prs.rs`: open PRs of the registered repos, read-only, through `gh` (JSON reduced to TSV with `--jq`, so no JSON crate).
 
@@ -27,6 +29,7 @@ Model:
 - Only the sidebar process opens the rail on its own, fetches PRs (every 60 s, into `~/.local/state/orcux/prs.2.tsv`) and writes the tmux status bar. Session styling is limited to the `orcux` session.
 - tmux session `orcux-bg` holds one window per hidden tab. A worktree has one pane per tab: `@orcux_tab` is its number (stable, lowest free) and `@orcux_on=1` marks the active one. The tabs of the visible worktree are drawn in the tmux border above the terminal (`@orcux_bar`). `<wt>:<n>` targets a tab in `show`, `send` and `read`.
 - If the visible terminal ends (`exit`), the sidebar shows another of its tabs or the placeholder (`heal`).
+- Logo: `⢎⡱ orcux` in the tmux border above the sidebar (an "o" of braille dots). A terminal cannot choose fonts.
 - Look: soft fills and gaps (`pane-border-lines spaces`), no lines; rounded outlines only in popups. Badges have rounded ends with `orcux icons nerd` (Powerline glyphs); never half blocks, which Terminal.app draws shorter than the cell.
 - Each worktree pane carries the pane option `@orcux=<repo>/<name>`; the sidebar carries `@orcux=__sidebar` and the rail `@orcux=__prs`. Panes are always found through that marker, never by index.
 - Showing a worktree = `swap-pane` between its pane and the right-hand one. If the one leaving is the placeholder (empty `@orcux`), it is killed.
@@ -42,6 +45,7 @@ Model:
 
 ## Gotchas already paid for
 
+- Inside a tmux conditional (`#{?…}`) a comma in a style breaks the whole format, without an error: use two `#[…]` or `#,`.
 - Session targets always use `=` (exact match) and no window index: `=orcux:`. Plain `orcux` prefix-matches `orcux-bg`. The user's `~/.tmux.conf` has `base-index 1`, so `:0` breaks.
 - `run()` does `trim_end()`, which eats the trailing `\t` of the last line when `#{@orcux}` is empty. Parse with a default, never with `split_once(...)?`.
 - `send` waits 150 ms between the text and Enter: TUIs like claude treat text+Enter in one burst as a paste.

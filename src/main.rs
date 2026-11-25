@@ -1,6 +1,8 @@
 mod agent;
 mod i18n;
+mod mark;
 mod orc;
+mod pixels;
 mod prs;
 mod theme;
 mod tui;
@@ -544,14 +546,15 @@ fn ui_panes() -> Vec<(String, String)> {
 /// Session "orcux": left pane = sidebar, right pane = whichever worktree terminal is shown.
 pub fn ensure_ui() -> Res<()> {
     let home = home().to_string_lossy().to_string();
+    let exe = env::current_exe().map_err(|e| e.to_string())?;
+    let welcome = format!("'{}' welcome", exe.display());
     if tmux(&["has-session", "-t", UI]).is_err() {
-        tmux(&["new-session", "-d", "-s", UI_NAME, "-c", &home])?;
+        tmux(&["new-session", "-d", "-s", UI_NAME, "-c", &home, &welcome])?;
         tmux(&["set-option", "-t", &format!("{UI}:"), "mouse", "on"])?;
     }
     let side = match ui_panes().into_iter().find(|p| p.1 == SIDEBAR) {
         Some(p) => p.0,
         None => {
-            let exe = env::current_exe().map_err(|e| e.to_string())?;
             let cmd = format!("'{}' sidebar", exe.display());
             let p = tmux(&["split-window", "-hb", "-l", "36", "-t", &format!("{UI}:"), "-P", "-F", "#{pane_id}", &cmd])?;
             tmux(&["set-option", "-p", "-t", &p, "@orcux", SIDEBAR])?;
@@ -560,16 +563,16 @@ pub fn ensure_ui() -> Res<()> {
     };
     let missing = terminal_pane().is_none();
     if missing {
-        tmux(&["split-window", "-h", "-d", "-t", &side, "-c", &home])?;
+        tmux(&["split-window", "-h", "-d", "-t", &side, "-c", &home, &welcome])?;
     }
     pin(missing)
 }
 
-fn ui_pane(mark: &str) -> Option<String> {
+pub fn ui_pane(mark: &str) -> Option<String> {
     ui_panes().into_iter().find(|p| p.1 == mark).map(|p| p.0)
 }
 
-/// (pane, marker) of the pane that shows a worktree's terminal, or the placeholder shell.
+/// (pane, marker) of the pane that shows a worktree's terminal, or the placeholder (`orcux welcome`, no marker).
 pub fn terminal_pane() -> Option<(String, String)> {
     ui_panes().into_iter().find(|p| p.1 != SIDEBAR && p.1 != RAIL)
 }
@@ -666,14 +669,16 @@ pub fn restart_self() -> String {
 /// Colors and status bar of the orcux session only; the user's other sessions keep theirs.
 pub fn style_ui() -> Res<()> {
     let t = format!("{UI}:");
-    let (abyss, hull, line, foam, muted) = (hex(theme::ABYSS), hex(theme::HULL), hex(theme::LINE), hex(theme::FOAM), hex(theme::MUTED));
+    let (abyss, hull, line, foam) = (hex(theme::ABYSS), hex(theme::HULL), hex(theme::LINE), hex(theme::FOAM));
     let status = format!("bg={abyss},fg={foam}");
     for (k, v) in [("status", "on"), ("status-style", status.as_str()), ("status-left-length", "120"), ("status-right-length", "80")] {
         tmux(&["set-option", "-t", &t, k, v])?;
     }
     let (gap, card) = (format!("bg={abyss},fg={abyss}"), format!("bg={hull}"));
     let rail = format!("#[bg={hull}#,fg={foam}#,bold]  {}  #[default]", tr().your_prs);
-    let name = format!("#[fg={muted}]orcux");
+    // the logo: an "o" of four by four dots, and the name. No commas: it goes inside a tmux conditional
+    let blue = hex(theme::CURRENT);
+    let name = format!("#[fg={blue}]⢎#[fg={foam}]⡱ #[bold]orcux");
     let titles = format!("#{{?#{{==:#{{@orcux}},{SIDEBAR}}},{name},#{{?#{{==:#{{@orcux}},{RAIL}}},{rail},#{{@orcux_bar}}}}}}");
     for (k, v) in [
         ("window-status-format", ""),
@@ -734,7 +739,7 @@ pub fn show_tab(w: &Wt, tab: Option<u32>) -> Res<()> {
     if pane != right {
         tmux(&["swap-pane", "-d", "-s", &pane, "-t", &right])?;
         if mark.is_empty() {
-            tmux(&["kill-pane", "-t", &right])?; // placeholder shell, not a worktree
+            tmux(&["kill-pane", "-t", &right])?; // the placeholder, not a worktree
         }
     }
     touch_recent(&w.id());
@@ -945,6 +950,7 @@ fn cli(a: &[&str]) -> Res<()> {
             Ok(())
         }
         ["rail"] => tui::rail(),
+        ["welcome"] => tui::welcome(),
         ["prs"] => prs::print(),
         ["switch"] => tui::switch(),
         ["commands"] => tui::commands(),

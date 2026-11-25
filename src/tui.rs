@@ -505,7 +505,7 @@ pub fn run() -> Res<()> {
             KeyCode::Char('q') => { tmux(&["detach-client"]).ok(); }
             KeyCode::Char('j') | KeyCode::Down => app.sel = (app.sel + 1).min(app.rows.len().saturating_sub(1)),
             KeyCode::Char('k') | KeyCode::Up => app.sel = app.sel.saturating_sub(1),
-            KeyCode::Char('?') => app.popup(tr().title_commands, (148, 34), &["commands"]),
+            KeyCode::Char('?') => app.popup(tr().title_commands, (136, 34), &["commands"]),
             KeyCode::Char('p') => if let Err(e) = toggle_rail() {
                 app.error(&e);
             },
@@ -709,6 +709,52 @@ fn draw_rail(f: &mut Frame, c: &Cache, wts: &[Wt], sel: usize, active: bool, bus
     rows.into_iter().zip(which).filter_map(|((a, b), i)| Some((a, b, i?))).collect()
 }
 
+/// What is shown when no worktree is: the logo and what to do next. Keys go to the sidebar.
+pub fn welcome() -> Res<()> {
+    let mut term = ratatui::init();
+    let binary = Binary::now();
+    let res = loop {
+        if binary.replaced() {
+            ratatui::restore();
+            break Err(restart_self());
+        }
+        let (all, wts) = (panes(), load());
+        let waits = |w: &&Wt| foremost(all.iter().filter(|p| p.wt == w.id())).is_some_and(|p| p.look() == State::Asking);
+        let waiting = wts.iter().filter(waits).count();
+        let drawn = term.draw(|f| {
+            f.render_widget(Block::new().style(Style::new().bg(HULL).fg(FOAM)), f.area());
+            let mut lines = vec![];
+            if f.area().height >= mark::H + 5 && f.area().width >= mark::W + 2 {
+                lines.extend(mark::lines());
+                lines.extend([Line::default(), Line::default()]);
+            }
+            if waiting > 0 {
+                let (g, c) = look(State::Asking);
+                lines.push(Line::from(fg(format!("{g} {}", (tr().agents_wait)(waiting)), c)));
+                lines.push(Line::default());
+            }
+            lines.push(keys(&[("n", tr().k_new), ("A", tr().k_add), ("?", tr().k_commands)]));
+            let [_, middle, _] = Layout::vertical([Constraint::Fill(1), Constraint::Length(lines.len() as u16), Constraint::Fill(1)]).areas(f.area());
+            f.render_widget(Paragraph::new(lines).centered(), middle);
+        });
+        if let Err(e) = drawn {
+            break Err(e.to_string());
+        }
+        let Some(Input::Key(k)) = poll_input(1000) else { continue };
+        let Some(side) = ui_pane(SIDEBAR) else { continue };
+        focus(SIDEBAR).ok();
+        match k {
+            KeyCode::Char(c) => tmux(&["send-keys", "-l", "-t", &side, "--", &c.to_string()]).ok(),
+            KeyCode::Enter => tmux(&["send-keys", "-t", &side, "Enter"]).ok(),
+            KeyCode::Up => tmux(&["send-keys", "-t", &side, "Up"]).ok(),
+            KeyCode::Down => tmux(&["send-keys", "-t", &side, "Down"]).ok(),
+            _ => None,
+        };
+    };
+    ratatui::restore();
+    res
+}
+
 pub fn rail() -> Res<()> {
     let mut term = ratatui::init();
     execute!(stdout(), event::EnableMouseCapture).ok();
@@ -750,7 +796,7 @@ pub fn rail() -> Res<()> {
             (KeyCode::Char('k') | KeyCode::Up, _) => { sel = sel.saturating_sub(1); Ok(()) }
             (KeyCode::Tab, _) => focus(SIDEBAR),
             (KeyCode::Char('p'), _) => toggle_rail(), // closes this pane
-            (KeyCode::Char('?'), _) => popup(tr().title_commands, (148, 34), &["commands"]),
+            (KeyCode::Char('?'), _) => popup(tr().title_commands, (136, 34), &["commands"]),
             (KeyCode::Char('r'), _) if busy.is_none() => { busy = Some(thread::spawn(|| { prs::refresh().ok(); })); Ok(()) }
             (KeyCode::Char('o'), Some(p)) => open_url(&p.url),
             (KeyCode::Enter, Some(p)) => view(p),
@@ -1201,7 +1247,7 @@ pub fn commands() -> Res<()> {
             // the orc goes beside the list, if there is room for both
             if area.width as usize >= 94 + 2 + orc::W && area.height as usize >= orc::H / 2 + 4 {
                 animated = true;
-                let [list, side] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(orc::W as u16 + 2)]).areas(area);
+                let [side, list] = Layout::horizontal([Constraint::Length(orc::W as u16 + 2), Constraint::Fill(1)]).areas(area);
                 area = list;
                 let tick = (start.elapsed().as_millis() / 120) as usize;
                 let mut art = orc::lines(tick);
@@ -1209,7 +1255,7 @@ pub fn commands() -> Res<()> {
                 let text = tr().orc[tick / 60 % tr().orc.len()];
                 let typed: String = text.chars().take(tick % 60).collect();
                 let cursor = if tick / 4 % 2 == 0 { "▏" } else { " " };
-                art.extend([Line::default(), Line::from(vec![fg("> ", KELP), fg(typed, FOAM), fg(cursor, FOAM)])]);
+                art.extend([Line::default(), Line::from(vec![fg("> ", MUTED), fg(typed, FOAM), fg(cursor, FOAM)])]);
                 f.render_widget(Paragraph::new(art), side.inner(Margin::new(1, 1)));
             }
             let [_, input, _, body, _, foot] = Layout::vertical([

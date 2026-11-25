@@ -1,124 +1,47 @@
 //! The orc that programs in the commands dialog. Layers of pixels, one character each, put together for every
-//! frame so that each part moves at its own pace. Two pixels per cell.
+//! frame so that each part moves at its own pace.
+use crate::{pixels, theme};
 use ratatui::prelude::*;
 
-pub const W: usize = 48;
-pub const H: usize = 44;
+pub const W: usize = 36;
+pub const H: usize = 32;
 
 /// Where it goes (column, row) and its pixels; a space is see-through.
 type Layer = (i32, i32, &'static [&'static str]);
 
-fn color(c: u8) -> u32 {
-    match c {
-        b'0' => 0x12240f,
-        b'1' => 0x141a26,
-        b'2' => 0x1a2231,
-        b'3' => 0x202a3b,
-        b'n' => 0x0b1020,
-        b'y' => 0xf3e6b3,
-        b'Y' => 0xcdbf8a,
-        b'*' => 0x8fa3c8,
-        b'F' => 0x2c3446,
-        b'f' => 0x3a4459,
-        b'P' => 0xff5fa2,
-        b'q' => 0x7a2f55,
-        b'g' => 0x2f6a35,
-        b'G' => 0x4b9447,
-        b'L' => 0x74bf5f,
-        b'l' => 0xa5de86,
-        b'h' => 0x1b1512,
-        b'H' => 0x3a2c22,
-        b'r' => 0xc94f4f,
-        b'o' => 0x0c0f0d,
-        b'w' => 0xf4f1de,
-        b'V' => 0xcfc7a6,
-        b'e' => 0xf5f5ee,
-        b'u' => 0x22301f,
-        b'm' => 0x33121a,
-        b't' => 0xd4626a,
-        b's' => 0x7cc8ff,
-        b'c' => 0x1f2a2a,
-        b'C' => 0x0f3b33,
-        b'x' => 0x46e0a0,
-        b'X' => 0x1e8f6a,
-        b'a' => 0xe8c15a,
-        b'd' => 0x1c6a58,
-        b'j' => 0x2f9a7d,
-        b'J' => 0x56c9a4,
-        b'W' => 0xdfe5df,
-        b'k' => 0x14161b,
-        b'b' => 0x3b2a20,
-        b'B' => 0x523a2b,
-        b'D' => 0x2a1d16,
-        b'K' => 0x2b2f38,
-        b'i' => 0x4a505c,
-        b'I' => 0x7fe3ff,
-        b'M' => 0xc9d3dc,
-        b'N' => 0x8e99a5,
-        b'T' => 0x5b3420,
-        b'S' => 0x8a93a6,
-        b'U' => 0xf6c945,
-        b'v' => 0xd79a1e,
-        b'O' => 0xee7b2d,
-        _ => 0x000000,
-    }
+/// Ink of each character, out of 100.
+fn ink(c: u8) -> Option<u32> {
+    Some(match c {
+        b' ' | b'0' => 0,
+        b'g' => 30,
+        b'G' => 46,
+        b'L' => 66,
+        b'l' => 82,
+        b'h' => 20,
+        b'H' => 34,
+        b'r' => 90,
+        b'w' => 100,
+        b'V' => 86,
+        b'e' => 100,
+        b'u' => 8,
+        b'm' => 4,
+        b't' => 50,
+        b's' => 60,
+        b'c' => 92,
+        b'C' => 8,
+        b'x' => 88,
+        b'X' => 48,
+        b'a' => 100,
+        b'd' => 14,
+        b'j' => 20,
+        b'J' => 30,
+        b'W' => 62,
+        b'k' => 8,
+        _ => return None,
+    })
 }
 
-const ROOM: Layer = (0, 0, &[
-    "111111111111111111111111111111111111111111111111",
-    "111111111111111111111111111111111111111111111111",
-    "11111111111111112222222222222222FFFFFFFFFFFFFF11",
-    "11111111111112222222222222222222FnnnnnFnnnnnnF11",
-    "11111111111222222222222222222222FfffffFffffffF11",
-    "11111111122222222222222222222222Fnn*nnFnyyynnF11",
-    "11111112222222222222222222222222FnnnnnFyyyyynF11",
-    "11111122222222222222222222222222FfffffFyfyyyfF11",
-    "11111222222222222222222222222222Fnnnn*FnyYynnF11",
-    "11112222222222222222222222222222FnnnnnFnnnnnnF11",
-    "11122222222222222233333333333332FfffffFffffffF11",
-    "11222222222222223333333333333333FnnnnnFnnnn*nF21",
-    "12222222222222333333333333333333FnnnnnF*nnnnnF22",
-    "22222222222233333333333333333333FfffffFffffffF22",
-    "22222222222333333333333333333333FFFFFFFFFFFFFF22",
-    "222222222233333333333333333333333333333222222222",
-    "222222222333333333333333333333333333333322222222",
-    "222222222333333333333333333333333333333322222222",
-    "222222223333333333333333333333333333333332222222",
-    "222222223333333333333333333333333333333332222222",
-    "222222233333333333333333333333333333333333222222",
-    "222222233333333333333333333333333333333333222222",
-    "222222233333333333333333333333333333333333222222",
-    "222222233333333333333333333333333333333333222222",
-    "222222233333333333333333333333333333333333222222",
-    "222222233333333333333333333333333333333333222222",
-    "222222233333333333333333333333333333333333222222",
-    "222222233333333333333333333333333333333333222222",
-    "222222233333333333333333333333333333333333222222",
-    "222222223333333333333333333333333333333332222222",
-    "222222223333333333333333333333333333333332222222",
-    "222222222333333333333333333333333333333322222222",
-    "222222222333333333333333333333333333333322222222",
-    "222222222233333333333333333333333333333222222222",
-    "222222222223333333333333333333333333332222222222",
-    "222222222222333333333333333333333333322222222222",
-    "122222222222223333333333333333333332222222222222",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    "DbbbbDbbDbbDbbbbDbbDbbDbbbbDbbDbbDbbbbDbbDbbDbbb",
-    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-]);
-
-const NEON: Layer = (3, 6, &[
-    "P    ",
-    " P   ",
-    "  P  ",
-    " P   ",
-    "P PPP",
-]);
-const BODY: Layer = (10, 23, &[
+const BODY: Layer = (4, 23, &[
     "          000000000          ",
     "       000dgggggggd000       ",
     "      0ddddgggggggdddd0      ",
@@ -200,70 +123,6 @@ const SHOUT: Layer = (10, 20, &[
     " 0mttttttm0 ",
     "  00000000  ",
 ]);
-const HAND_L: Layer = (0, 0, &[
-    "  0000 ",
-    " 0LLGG0",
-    "0LGGGGg",
-    "0GGGGg0",
-    " 0g0g0 ",
-]);
-const HAND_R: Layer = (0, 0, &[
-    " 0000  ",
-    "0GGLL0 ",
-    "gGGGGL0",
-    "0gGGGG0",
-    " 0g0g0 ",
-]);
-const SLEEVE_L: Layer = (8, 30, &[
-    "   000    ",
-    " 00jjj0   ",
-    "0ddJJjj0  ",
-    "0dJJJjjj0 ",
-    "0JJJjjjjj0",
-    "0dJJjjjjj0",
-    "0ddjjjjjj0",
-    "0ddjjjjjj0",
-    " 00000000 ",
-]);
-const SLEEVE_R: Layer = (30, 30, &[
-    "    000   ",
-    "   0jjj00 ",
-    "  0jjJJdd0",
-    " 0jjjJJJd0",
-    "0jjjjjJJJ0",
-    "0jjjjjJJd0",
-    "0jjjjjjdd0",
-    "0jjjjjjdd0",
-    " 00000000 ",
-]);
-const MUG: Layer = (0, 0, &[
-    "MMMMMM ",
-    "TTTTTT ",
-    "MMMMNMM",
-    "MMMMN M",
-    "MMMMNMM",
-    "MMMNNN ",
-    " NNNN  ",
-]);
-const DUCK: Layer = (0, 0, &[
-    "  UUU  ",
-    "  UoUOO",
-    "  UUUO ",
-    "UUUUU  ",
-    "UUvUUU ",
-    "UvvvUU ",
-    " UUUU  ",
-]);
-const KEYBOARD: Layer = (0, 0, &[
-    "KKKKKKKKKKKKKKKKKKKKKKKKKK",
-    "KiKiiKiKiiKiKiiKiKiiKiKiiK",
-    "KKKKKKKKKKKKKKKKKKKKKKKKKK",
-]);
-const STEAM: [Layer; 3] = [
-    (0, 0, &[" S ", "S  ", " S ", "  S"]),
-    (0, 0, &["S  ", " S ", "  S", " S "]),
-    (0, 0, &["  S", " S ", "S  ", " S "]),
-];
 
 struct Frame([[u8; W]; H]);
 
@@ -285,16 +144,11 @@ impl Frame {
 
 /// The frame at tick `t`. Every so often he loses it for a while.
 fn frame(t: usize) -> Frame {
-    let mut f = Frame([[b'1'; W]; H]);
+    let mut f = Frame([[b' '; W]; H]);
     let at = |list: &[i32], i: usize| list[i % list.len()];
     let wild = t % 96 >= 64;
-    f.put(ROOM, 0, 0);
-    f.put(NEON, 0, 0);
-    if t % 29 < 2 || t % 41 == 7 {
-        f.0.iter_mut().flatten().filter(|c| **c == b'P').for_each(|c| *c = b'q'); // it flickers
-    }
     f.put(BODY, 0, 0);
-    let dx = 8 + if wild { at(&[0, 1, 0, -1], t) } else { at(&[0, 0, 1, 1, 1, 0, 0, -1, -1, -1], t / 2) };
+    let dx = 2 + if wild { at(&[0, 1, 0, -1], t) } else { at(&[0, 0, 1, 1, 1, 0, 0, -1, -1, -1], t / 2) };
     let dy = 1 + if wild { t % 2 } else { t / 4 % 2 } as i32;
     f.put(HEAD, dx, dy);
     if wild {
@@ -325,39 +179,12 @@ fn frame(t: usize) -> Frame {
             }
         }
     }
-    f.put(KEYBOARD, 11, 38);
-    let key = t * 7 % 24;
-    f.dot(12 + key as i32, 39, b'I');
-    f.dot(12 + ((key * 5 + 9) % 24) as i32, 39, b'I');
-    let up = |down: bool| if down { 0 } else { -2 };
-    let (left, right) = if wild { (t % 3 != 0, t % 3 != 1) } else { (t % 2 == 1, t % 2 == 0) };
-    f.put(SLEEVE_L, 0, 0);
-    f.put(SLEEVE_R, 0, 0);
-    f.put(HAND_L, 13, 36 + up(left));
-    f.put(HAND_R, 28, 36 + up(right));
-    f.put(MUG, 40, 33);
-    f.put(STEAM[t / 3 % 3], 41, 28);
-    f.put(DUCK, 1, if wild && t % 4 == 0 { 31 } else { 32 });
     f
 }
 
-/// Lower half blocks: the upper ones leave a stripe in fonts that draw them shorter than the cell.
 pub fn lines(t: usize) -> Vec<Line<'static>> {
-    let f = frame(t);
-    f.0.chunks(2).map(|rows| {
-        let mut spans: Vec<Span> = vec![];
-        let mut last = None;
-        for (top, low) in rows[0].iter().zip(&rows[1]) {
-            if last == Some((top, low)) {
-                spans.last_mut().unwrap().content.to_mut().push('▄');
-            } else {
-                let st = Style::new().bg(Color::from_u32(color(*top))).fg(Color::from_u32(color(*low)));
-                spans.push(Span::styled("▄", st));
-                last = Some((top, low));
-            }
-        }
-        Line::from(spans)
-    }).collect()
+    let rows: Vec<Vec<u32>> = frame(t).0.iter().map(|r| r.iter().map(|c| ink(*c).unwrap_or(0)).collect()).collect();
+    pixels::lines(&rows, theme::HULL)
 }
 
 #[cfg(test)]
@@ -365,9 +192,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_pixel_has_a_color() {
+    fn every_pixel_has_ink() {
         for t in 0..300 {
-            assert!(frame(t).0.iter().flatten().all(|c| color(*c) != 0), "tick {t}");
+            assert!(frame(t).0.iter().flatten().all(|c| ink(*c).is_some()), "tick {t}");
             assert!(lines(t).iter().all(|l| l.width() == W) && lines(t).len() == H / 2);
         }
     }

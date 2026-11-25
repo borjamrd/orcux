@@ -14,6 +14,7 @@ pub const CURRENT: u32 = 0x8ab8f5; // working
 pub const SIGNAL: u32 = 0xe0b060; // waiting for the user
 pub const CORAL: u32 = 0xf08a78; // failed
 pub const KELP: u32 = 0xa3d39c; // done
+pub const DEEP: u32 = 0x24528c; // start of the logo's gradient: no meaning
 /// Repo badges: only identity, no meaning.
 pub const BADGES: [u32; 4] = [0x7f9cc4, 0x84ad8d, 0xa59bd0, 0x78b3b5];
 
