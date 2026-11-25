@@ -30,6 +30,7 @@ fn look(s: State) -> (&'static str, Color) {
     match s {
         State::Failed => ("✕", CORAL),
         State::Waiting => ("◆", SIGNAL),
+        State::Asking => ("?", SIGNAL),
         State::Working => ("●", CURRENT),
         State::Idle => ("○", MUTED),
         State::Done => ("✓", KELP),
@@ -39,7 +40,7 @@ fn look(s: State) -> (&'static str, Color) {
 pub fn look_hex(s: State) -> (&'static str, u32) {
     let color = match s {
         State::Failed => theme::CORAL,
-        State::Waiting => theme::SIGNAL,
+        State::Waiting | State::Asking => theme::SIGNAL,
         State::Working => theme::CURRENT,
         State::Idle => theme::MUTED,
         State::Done => theme::KELP,
@@ -256,7 +257,7 @@ impl App {
     }
 
     fn waits(&self, id: &str) -> bool {
-        self.foremost(id).is_some_and(|p| p.look() == State::Waiting)
+        self.foremost(id).is_some_and(|p| p.look() == State::Asking)
     }
 
     fn update_status(&mut self, wts: &[Wt]) {
@@ -264,7 +265,7 @@ impl App {
         let mut left = String::new();
         match wts.iter().filter(|w| self.waits(&w.id())).count() {
             0 => {}
-            n => left += &format!(" #[fg={}]◆ {} ", hex(theme::SIGNAL), (tr().agents_wait)(n)),
+            n => left += &format!(" #[fg={}]{} {} ", hex(theme::SIGNAL), look(State::Asking).0, (tr().agents_wait)(n)),
         }
         match self.prs.prs.iter().filter(|p| p.status().0 == Group::Yours).count() {
             0 => left += " ",
@@ -351,7 +352,7 @@ impl App {
         if selected {
             let text = match (pr, self.foremost(&id)) {
                 _ if gone => fg(tr().gone, CORAL),
-                (_, Some(p)) if matches!(p.look(), State::Waiting | State::Failed | State::Done) => {
+                (_, Some(p)) if matches!(p.look(), State::Asking | State::Failed | State::Done) => {
                     let (a, at) = p.agent.unwrap_or((Agent::Done, prs::now()));
                     let ago = (tr().ago)(&prs::ago(prs::now().saturating_sub(at)));
                     fg(format!("{}, {ago}", a.text()), look(p.look()).1)
@@ -583,7 +584,7 @@ pub fn switch() -> Res<()> {
                 let mine = foremost(live.iter().filter(|p| p.wt == id));
                 let (g, c) = look(mine.map_or(State::Idle, Pane::look));
                 let mut left = vec![" ".into(), fg(g, c), " ".into(), fg(format!("{}/", wt.repo_name()), MUTED), wt.name.clone().bold().fg(FOAM)];
-                if let Some((a, _)) = mine.filter(|p| matches!(p.look(), State::Waiting | State::Failed | State::Done)).and_then(|p| p.agent) {
+                if let Some((a, _)) = mine.filter(|p| matches!(p.look(), State::Asking | State::Failed | State::Done)).and_then(|p| p.agent) {
                     left.push(fg(format!("  {}", a.text()), c));
                 } else if let Some(p) = pr_of(wt) {
                     let (_, s, t) = p.status();
@@ -1519,6 +1520,11 @@ pub fn dialog_error(text: &str) -> Res<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_agent_and_a_pr_that_wait_look_different() {
+        assert_ne!(look(State::Asking).0, look(State::Waiting).0);
+    }
 
     #[test]
     fn names_and_cuts() {

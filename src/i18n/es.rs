@@ -136,7 +136,7 @@ pub static ES: Text = Text {
     agent_failed: "el agente ha fallado",
     agent_done: "ha terminado",
     agents_wait: |n| if n == 1 { "1 agente te espera".into() } else { format!("{n} agentes te esperan") },
-    agents_short: |n| format!("◆ {n} te espera{}", if n == 1 { "" } else { "n" }),
+    agents_short: |n| format!("? {n} te espera{}", if n == 1 { "" } else { "n" }),
     unopened: "sin abrir",
     gone: "la carpeta ya no existe",
     no_repos: "Sin repos: ejecuta `orcux repo add <ruta>`",

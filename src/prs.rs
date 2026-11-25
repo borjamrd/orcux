@@ -58,6 +58,8 @@ pub enum Group {
 pub enum State {
     Failed,
     Waiting,
+    /// an agent that waits for the user: never of a PR, so that both can be told apart on one row
+    Asking,
     Working,
     Idle,
     Done,

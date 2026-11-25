@@ -437,7 +437,7 @@ pub struct Pane {
 impl Pane {
     pub fn look(&self) -> prs::State {
         match self.agent.map(|a| a.0) {
-            Some(a) if a.waits() => prs::State::Waiting,
+            Some(a) if a.waits() => prs::State::Asking,
             Some(Agent::Failed) => prs::State::Failed,
             _ if self.busy => prs::State::Working,
             Some(Agent::Done) => prs::State::Done,
@@ -449,7 +449,7 @@ impl Pane {
 /// The tab of a worktree that matters most: one that waits for the user, then failed, working, done and idle.
 pub fn foremost<'a>(tabs: impl Iterator<Item = &'a Pane>) -> Option<&'a Pane> {
     let rank = |s: prs::State| match s {
-        prs::State::Waiting => 0,
+        prs::State::Asking | prs::State::Waiting => 0,
         prs::State::Failed => 1,
         prs::State::Working => 2,
         prs::State::Done => 3,
