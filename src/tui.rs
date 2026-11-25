@@ -128,7 +128,8 @@ fn active() -> bool {
 
 enum Row {
     Repo(PathBuf),
-    Wt(Wt),
+    /// and whether it is the last of its siblings, at every level
+    Wt(Wt, Vec<bool>),
 }
 
 struct App {
@@ -159,7 +160,8 @@ impl App {
         self.rows.clear();
         for r in repos() {
             self.rows.push(Row::Repo(r.clone()));
-            self.rows.extend(wts.iter().filter(|w| w.repo == r).cloned().map(Row::Wt));
+            let of: Vec<&Wt> = wts.iter().filter(|w| w.repo == r).collect();
+            self.rows.extend(tree(&of).into_iter().map(|(w, trail)| Row::Wt(w, trail)));
         }
         self.sel = self.sel.min(self.rows.len().saturating_sub(1));
         self.live.clear();
@@ -244,12 +246,12 @@ impl App {
     fn repo_of_selected(&self) -> Option<PathBuf> {
         match self.selected()? {
             Row::Repo(p) => Some(p.clone()),
-            Row::Wt(w) => Some(w.repo.clone()),
+            Row::Wt(w, _) => Some(w.repo.clone()),
         }
     }
 
     /// One line, hung from its repo; the selected one also tells how it is and its port.
-    fn wt_lines<'a>(&self, w: &Wt, width: u16, last: bool, selected: bool) -> Vec<Line<'a>> {
+    fn wt_lines<'a>(&self, w: &Wt, width: u16, trail: &[bool], selected: bool) -> Vec<Line<'a>> {
         let id = w.id();
         let tabs = self.live.get(&id).map_or(0, Vec::len);
         let pr = self.prs.prs.iter().find(|p| p.is_of(w)).map(|p| (p.number.clone(), p.status()));
@@ -264,7 +266,9 @@ impl App {
             right.push(fg("● ", CURRENT));
         }
         let name = if tabs > 0 || selected { fg(w.name.clone(), FOAM) } else { fg(w.name.clone(), MUTED) };
-        let branch = if last { " ╰── " } else { " ├── " };
+        let (last, above) = trail.split_last().unwrap_or((&true, &[]));
+        let stem: String = above.iter().map(|l| if *l { "    " } else { "│   " }).collect();
+        let branch = format!(" {stem}{}", if *last { "╰── " } else { "├── " });
         let mut lines = vec![lr(width, vec![fg(branch, LINE), name], right)];
         if selected {
             let text = match (pr, self.running(&id)) {
@@ -274,7 +278,7 @@ impl App {
                 (None, Some(cmd)) if self.working(&id) => fg((tr().working)(cmd), CURRENT),
                 (None, Some(cmd)) => fg((tr().idle)(cmd), MUTED),
             };
-            let branch = if last { "     " } else { " │   " };
+            let branch = format!(" {stem}{}", if *last { "    " } else { "│   " });
             lines.push(lr(width, vec![fg(branch, LINE), text], vec![fg(format!(" {} ", w.port()), MUTED)]));
         }
         lines
@@ -303,7 +307,7 @@ impl App {
         f.render_widget(Block::new().style(Style::new().bg(ABYSS).fg(FOAM)), f.area());
         let [_, list, _, foot] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1), Constraint::Length(2)]).areas(f.area());
         let w = f.area().width;
-        let is_wt = |j: usize| matches!(self.rows.get(j), Some(Row::Wt(_)));
+        let is_wt = |j: usize| matches!(self.rows.get(j), Some(Row::Wt(..)));
         let mut items = vec![];
         for (i, r) in self.rows.iter().enumerate() {
             let sel = i == self.sel;
@@ -315,7 +319,7 @@ impl App {
                     }
                     items.push((vec![self.repo_line(p, w, wts)], sel));
                 }
-                Row::Wt(wt) => items.push((self.wt_lines(wt, w, !is_wt(i + 1), sel), sel)),
+                Row::Wt(wt, trail) => items.push((self.wt_lines(wt, w, trail, sel), sel)),
             }
         }
         blocks(f, list, items, self.active);
@@ -412,7 +416,11 @@ pub fn run() -> Res<()> {
                 app.error(&e);
             },
             KeyCode::Tab => { focus(RAIL).ok(); }
-            KeyCode::Char('t') => if let Some(Row::Wt(w)) = app.selected() {
+            KeyCode::Char('N') => if let Some(Row::Wt(w, _)) = app.selected() {
+                let id = w.id();
+                app.popup(tr().title_child, DIALOG, &["dialog", "child", &id]);
+            },
+            KeyCode::Char('t') => if let Some(Row::Wt(w, _)) = app.selected() {
                 if let Err(e) = open_tab(&w.clone()) {
                     app.error(&e);
                 }
@@ -429,7 +437,7 @@ pub fn run() -> Res<()> {
                 app.popup(tr().title_add, (76, 11), &["dialog", "add", &base.to_string_lossy()]);
             }
             KeyCode::Char('d') => match app.selected() {
-                Some(Row::Wt(w)) => {
+                Some(Row::Wt(w, _)) => {
                     let (id, title) = (w.id(), if w.at.is_some() { tr().title_unregister } else { tr().title_rm });
                     app.popup(title, DIALOG, &["dialog", "rm", &id]);
                 }
@@ -439,7 +447,7 @@ pub fn run() -> Res<()> {
                 }
                 None => {}
             },
-            KeyCode::Enter => if let Some(Row::Wt(w)) = app.selected() {
+            KeyCode::Enter => if let Some(Row::Wt(w, _)) = app.selected() {
                 if let Err(e) = show(&w.clone()) {
                     app.error(&e);
                 }
@@ -1133,17 +1141,24 @@ fn short(e: &str) -> String {
     e.rsplit("fatal: ").next().unwrap_or(e).into()
 }
 
-pub fn dialog_new(repo: &Path) -> Res<()> {
+pub fn dialog_new(repo: &Path, parent: Option<&Wt>) -> Res<()> {
     dialog(|term| {
         let repo_name = repo.file_name().unwrap_or_default().to_string_lossy().to_string();
         let (mut name, mut err) = (String::new(), String::new());
+        let dirty = parent.is_some_and(|p| git(&p.path(), &["status", "--porcelain"]).is_ok_and(|s| !s.is_empty()));
         loop {
-            let lines = |status: Line<'static>| vec![
-                Line::from(vec![tag(tr().label_repo).fg(MUTED), repo_name.clone().bold().fg(FOAM)]),
-                Line::from(vec![tag(tr().label_name).fg(MUTED), format!("{name}▏").into()]),
-                Line::default(),
-                status,
-            ];
+            let lines = |status: Line<'static>| {
+                let mut l = vec![Line::from(vec![tag(tr().label_repo).fg(MUTED), repo_name.clone().bold().fg(FOAM)])];
+                if let Some(p) = parent {
+                    l.push(Line::from(vec![tag(tr().label_parent).fg(MUTED), p.name.clone().fg(FOAM), format!("  {}", p.branch().unwrap_or_default()).fg(MUTED)]));
+                }
+                l.push(Line::from(vec![tag(tr().label_name).fg(MUTED), format!("{name}▏").into()]));
+                if let (Some(p), true) = (parent, dirty) {
+                    l.push(Line::from((tr().parent_dirty)(&p.name)).fg(SIGNAL));
+                }
+                l.extend([Line::default(), status]);
+                l
+            };
             draw_dialog(term, lines(Line::from(err.clone()).fg(CORAL)), tr().hint_new)?;
             match key()? {
                 Some(KeyCode::Esc) => return Ok(()),
@@ -1151,7 +1166,7 @@ pub fn dialog_new(repo: &Path) -> Res<()> {
                 Some(KeyCode::Char(c)) if !c.is_whitespace() => name.push(c),
                 Some(KeyCode::Enter) if !name.is_empty() => {
                     draw_dialog(term, lines(Line::from(tr().creating).fg(CURRENT)), "")?;
-                    match create(repo, &name, None).and_then(|w| show(&w)) {
+                    match create_from(repo, &name, None, parent).and_then(|w| show(&w)) {
                         Ok(()) => return Ok(()),
                         Err(e) => err = short(&e), // stay open to fix the name
                     }

@@ -38,6 +38,8 @@ pub struct Wt {
     pub slot: u32,
     /// where it is, when it was imported instead of created by orcux
     pub at: Option<PathBuf>,
+    /// name of the worktree (of the same repo) it was created from; only a relation, its folder is not inside
+    pub parent: Option<String>,
 }
 
 impl Wt {
@@ -114,15 +116,34 @@ pub fn load() -> Vec<Wt> {
     fs::read_to_string(state_dir().join("worktrees.tsv")).unwrap_or_default().lines()
         .filter_map(|l| {
             let mut p = l.split('\t');
-            Some(Wt { repo: p.next()?.into(), name: p.next()?.into(), slot: p.next()?.parse().ok()?, at: p.next().filter(|s| !s.is_empty()).map(PathBuf::from) })
+            let text = |s: Option<&str>| s.filter(|s| !s.is_empty()).map(String::from);
+            Some(Wt { repo: p.next()?.into(), name: p.next()?.into(), slot: p.next()?.parse().ok()?, at: text(p.next()).map(PathBuf::from), parent: text(p.next()) })
         })
         .collect()
 }
 
 fn save(wts: &[Wt]) -> Res<()> {
-    let at = |w: &Wt| w.at.as_ref().map(|p| format!("\t{}", p.display())).unwrap_or_default();
-    let s: String = wts.iter().map(|w| format!("{}\t{}\t{}{}\n", w.repo.display(), w.name, w.slot, at(w))).collect();
+    let at = |w: &Wt| w.at.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
+    let line = |w: &Wt| format!("{}\t{}\t{}\t{}\t{}\n", w.repo.display(), w.name, w.slot, at(w), w.parent.as_deref().unwrap_or(""));
+    let s: String = wts.iter().map(line).collect();
     fs::write(state_dir().join("worktrees.tsv"), s).map_err(|e| e.to_string())
+}
+
+/// The worktrees of a repo as a tree, parents before their children. With each one, whether it is the last of its
+/// siblings at every level down to its own. A missing parent makes a root.
+pub fn tree(wts: &[&Wt]) -> Vec<(Wt, Vec<bool>)> {
+    fn walk(wts: &[&Wt], parent: Option<&str>, trail: &[bool], out: &mut Vec<(Wt, Vec<bool>)>) {
+        let known = |p: &str| wts.iter().any(|w| w.name == p);
+        let here: Vec<&&Wt> = wts.iter().filter(|w| w.parent.as_deref().filter(|p| known(p)) == parent).collect();
+        for (i, w) in here.iter().enumerate() {
+            let trail: Vec<bool> = trail.iter().copied().chain([i + 1 == here.len()]).collect();
+            out.push(((**w).clone(), trail.clone()));
+            walk(wts, Some(&w.name), &trail, out);
+        }
+    }
+    let mut out = vec![];
+    walk(wts, None, &[], &mut out);
+    out
 }
 
 pub fn repos() -> Vec<PathBuf> {
@@ -256,17 +277,29 @@ pub fn create_for_pr(repo: &Path, branch: &str) -> Res<Wt> {
 }
 
 pub fn create(repo: &Path, name: &str, cmd: Option<&str>) -> Res<Wt> {
+    create_from(repo, name, cmd, None)
+}
+
+/// With a parent, the new branch starts at the parent's last commit instead of origin/HEAD.
+pub fn create_from(repo: &Path, name: &str, cmd: Option<&str>, parent: Option<&Wt>) -> Res<Wt> {
     let repo = add_repo(repo)?;
     let mut wts = load();
     if wts.iter().any(|w| w.repo == repo && w.name == name) {
         return Err((tr().exists)(name));
     }
     let slot = free_slot(&wts);
-    let wt = Wt { repo: repo.clone(), name: name.into(), slot, at: None };
+    let wt = Wt { repo: repo.clone(), name: name.into(), slot, at: None, parent: parent.map(|p| p.name.clone()) };
     let path = wt.path();
     let p = path.to_str().ok_or(tr().non_utf8)?;
     let has = |r: &str| git(&repo, &["rev-parse", "--verify", "--quiet", r]).is_ok();
-    if has(&format!("refs/heads/{name}")) || has(&format!("refs/remotes/origin/{name}")) {
+    let exists = has(&format!("refs/heads/{name}")) || has(&format!("refs/remotes/origin/{name}"));
+    if let Some(parent) = parent {
+        if exists {
+            return Err((tr().branch_exists)(name));
+        }
+        let base = git(&parent.path(), &["rev-parse", "HEAD"])?;
+        git(&repo, &["worktree", "add", "--no-track", "-b", name, p, &base])?;
+    } else if exists {
         git(&repo, &["worktree", "add", p, name])?;
     } else {
         let base = if has("refs/remotes/origin/HEAD") { "origin/HEAD" } else { "HEAD" };
@@ -316,7 +349,7 @@ fn importable(p: &Path, wts: &[Wt]) -> Res<Wt> {
     if wts.iter().any(|w| w.path().canonicalize().is_ok_and(|q| q == p)) {
         return Err(tr().registered.into());
     }
-    let w = Wt { repo, name, slot: 0, at: Some(p) };
+    let w = Wt { repo, name, slot: 0, at: Some(p), parent: None };
     match wts.iter().find(|x| x.id() == w.id()) {
         Some(_) => Err((tr().id_taken)(&w.id())),
         None => Ok(w),
@@ -364,7 +397,11 @@ pub fn remove(w: &Wt, force: bool) -> Res<()> {
     for p in tabs(&w.id()) {
         tmux(&["kill-pane", "-t", &p.pane])?;
     }
-    save(&load().into_iter().filter(|x| x != w).collect::<Vec<_>>())?;
+    let mut left: Vec<Wt> = load().into_iter().filter(|x| x != w).collect();
+    for child in left.iter_mut().filter(|x| x.repo == w.repo && x.parent.as_ref() == Some(&w.name)) {
+        child.parent = w.parent.clone(); // up one level
+    }
+    save(&left)?;
     if tmux(&["has-session", "-t", UI]).is_ok() {
         ensure_ui()?; // the killed pane may have been the visible one
     }
@@ -828,7 +865,11 @@ fn cli(a: &[&str]) -> Res<()> {
         ["prs"] => prs::print(),
         ["switch"] => tui::switch(),
         ["commands"] => tui::commands(),
-        ["dialog", "new", repo] => tui::dialog_new(Path::new(repo)),
+        ["dialog", "new", repo] => tui::dialog_new(Path::new(repo), None),
+        ["dialog", "child", id] => {
+            let w = find(Some(id))?;
+            tui::dialog_new(&w.repo, Some(&w))
+        }
         ["dialog", "add", base] => tui::dialog_add(Path::new(base)),
         ["dialog", "rmrepo", repo] => tui::dialog_rm_repo(Path::new(repo)),
         ["dialog", "rm", id] => tui::dialog_rm(&find(Some(id))?),
@@ -837,8 +878,12 @@ fn cli(a: &[&str]) -> Res<()> {
         ["dialog", "close"] => tui::dialog_close(),
         ["dialog", "error", text] => tui::dialog_error(text),
         ["new", name, rest @ ..] => {
-            let repo = flag(rest, "--repo").map(PathBuf::from).unwrap_or(env::current_dir().map_err(|e| e.to_string())?);
-            let w = create(&repo, name, flag(rest, "--cmd"))?;
+            let parent = flag(rest, "--parent").map(|q| find(Some(q))).transpose()?;
+            let repo = match &parent {
+                Some(p) => p.repo.clone(),
+                None => flag(rest, "--repo").map(PathBuf::from).unwrap_or(env::current_dir().map_err(|e| e.to_string())?),
+            };
+            let w = create_from(&repo, name, flag(rest, "--cmd"), parent.as_ref())?;
             println!("{}  {}  ORCUX_PORT={}", w.id(), w.path().display(), w.port());
             Ok(())
         }
@@ -929,5 +974,19 @@ fn cli(a: &[&str]) -> Res<()> {
             print!("{}", help());
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trees() {
+        let w = |name: &str, parent: Option<&str>| Wt { repo: "/r".into(), name: name.into(), slot: 1, at: None, parent: parent.map(String::from) };
+        let all = [w("a", None), w("b", None), w("a2", Some("a")), w("orphan", Some("gone")), w("a1", Some("a")), w("a2x", Some("a2"))];
+        let got: Vec<(String, Vec<bool>)> = tree(&all.iter().collect::<Vec<_>>()).into_iter().map(|(w, t)| (w.name, t)).collect();
+        let want = [("a", vec![false]), ("a2", vec![false, false]), ("a2x", vec![false, false, true]), ("a1", vec![false, true]), ("b", vec![false]), ("orphan", vec![true])];
+        assert_eq!(got, want.map(|(n, t)| (n.to_string(), t)));
     }
 }

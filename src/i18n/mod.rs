@@ -34,6 +34,7 @@ pub struct Text {
     // dialogs
     pub title_commands: &'static str,
     pub title_new: &'static str,
+    pub title_child: &'static str,
     pub title_add: &'static str,
     pub title_error: &'static str,
     pub title_unregister: &'static str,
@@ -51,6 +52,8 @@ pub struct Text {
     pub hint_close: &'static str,
     pub hint_view: &'static str,
     pub label_repo: &'static str,
+    pub label_parent: &'static str,
+    pub parent_dirty: fn(&str) -> String,
     pub label_project: &'static str,
     pub will_register: fn(&str) -> String,
     pub will_clone: fn(&str) -> String,
@@ -146,6 +149,7 @@ pub struct Text {
     pub no_worktree_here: &'static str,
     pub ambiguous: &'static str,
     pub exists: fn(&str) -> String,
+    pub branch_exists: fn(&str) -> String,
     pub non_utf8: &'static str,
     pub not_running: &'static str,
     pub no_tab: fn(&str) -> String,
@@ -251,7 +255,7 @@ mod tests {
             for s in [t.hint_new, t.hint_pr, t.hint_unregister, t.hint_rm, t.hint_force, t.hint_any, t.kept_rm, t.kept_unregister, t.kept_close, t.kept_repo, t.hint_add, t.fetching] {
                 assert!(width(s) <= 60, "{lang}: {s}");
             }
-            for s in [t.label_repo, t.label_name, t.label_branch, t.label_port] {
+            for s in [t.label_repo, t.label_parent, t.label_name, t.label_branch, t.label_port] {
                 assert!(width(s) <= 6, "{lang}: {s}");
             }
             assert!(width(&(t.counts)(99, 99)) <= 42, "{lang}: counts");
