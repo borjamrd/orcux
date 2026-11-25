@@ -903,19 +903,25 @@ pub fn style_ui() -> Res<()> {
     for (k, v) in [("status", "on"), ("mouse", "on"), ("status-style", status.as_str()), ("status-left-length", "120"), ("status-right-length", "80")] {
         tmux(&["set-option", "-t", &t, k, v]).ok();
     }
-    let (gap, card) = (format!("bg={abyss},fg={abyss}"), format!("bg={hull}"));
-    let rail = format!("#[bg={hull}#,fg={foam}#,bold]  {}  #[default]", tr().your_prs);
+    // one color: tmux draws the top line of the active pane with the inactive style
+    let frame = format!("bg={abyss},fg={}", hex(theme::CURRENT));
+    let focus = frame.clone();
+    // titles of the sidebar and the rail cover the line of their border: only the terminal is framed
+    let cover = " ".repeat(240);
+    let rail = format!("#[bg={hull}#,fg={foam}#,bold]  {}  #[default]{cover}", tr().your_prs);
     // the logo, an "o" of four by four dots, and the name. No commas: it goes inside a tmux conditional
     let blue = hex(theme::CURRENT);
-    let name = format!("#[fg={blue}]⢎#[fg={foam}]⡱ #[bold]orcux");
+    let name = format!("#[fg={blue}]⢎#[fg={foam}]⡱ #[bold]orcux{cover}");
     let titles = format!("#{{?#{{==:#{{@orcux}},{SIDEBAR}}},{name},#{{?#{{==:#{{@orcux}},{RAIL}}},{rail},#{{@orcux_bar}}}}}}");
     for (k, v) in [
         ("window-status-format", ""),
         ("window-status-current-format", ""),
-        ("pane-border-lines", "spaces"), // gaps instead of lines
-        ("pane-border-style", gap.as_str()),
-        ("pane-active-border-style", gap.as_str()),
-        ("window-style", card.as_str()),
+        // a thin frame around the terminal, in the accent while it has the focus
+        ("pane-border-lines", "single"),
+        ("pane-border-indicators", "off"),
+        ("pane-border-style", frame.as_str()),
+        ("pane-active-border-style", focus.as_str()),
+        ("window-style", "bg=default"),
         ("pane-border-status", "top"),
         ("pane-border-format", titles.as_str()),
     ] {
@@ -1131,20 +1137,21 @@ pub fn close_tab(w: &Wt, n: u32) -> Res<()> {
 /// The tabs of the visible worktree, as a tmux format for the border above the terminal.
 pub fn tab_bar() -> String {
     let Some((pane, id)) = terminal_pane().filter(|p| !p.1.is_empty()) else { return String::new() };
-    let (hull, foam, muted, line, current) = (hex(theme::HULL), hex(theme::FOAM), hex(theme::MUTED), hex(theme::LINE), hex(theme::CURRENT));
+    let (hull, muted, wake, current) = (hex(theme::HULL), hex(theme::MUTED), hex(theme::WAKE), hex(theme::CURRENT));
     let one = |p: &Pane| {
         let cmd = tui::program(&p.cmd).replace('#', "##");
         let (glyph, color) = tui::look_hex(p.look());
         let dot = if p.look() == prs::State::Idle { String::new() } else { format!("#[fg={}]{glyph} ", hex(color)) };
         // one style per #[…]: a comma inside a tmux conditional breaks the whole format
         if p.pane == pane {
-            // the fill of the terminal below, so they read as one card; the accent says which one it is
-            format!("#[bg={hull}]#[fg={current}]#[bold]  {} {dot}#[fg={foam}]#[underscore]{cmd}#[nounderscore]  #[default]", p.tab)
+            // filled with the accent, on the frame of the terminal
+            let dot = if dot.is_empty() { dot } else { format!("#[fg={hull}]{glyph} ") };
+            format!("#[bg={current}]#[fg={hull}]#[bold] {} {dot}{cmd} #[default] ", p.tab)
         } else {
-            format!("#[fg={line}]  {} {dot}#[fg={muted}]{cmd}  #[default]", p.tab)
+            format!("#[bg={wake}]#[fg={muted}] {} {dot}#[fg={muted}]{cmd} #[default] ", p.tab)
         }
     };
-    tabs(&id).iter().map(one).collect::<String>() + &format!("#[fg={line}] +")
+    format!(" {}#[fg={muted}]+ ", tabs(&id).iter().map(one).collect::<String>())
 }
 
 pub fn set_tab_bar(bar: &str) {

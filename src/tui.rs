@@ -823,12 +823,6 @@ pub fn run() -> Res<()> {
     execute!(stdout(), event::EnableMouseCapture).ok();
     let mut wakes = Wakes::start();
     style_ui().ok();
-    // the window's style fills panes with the card; the sidebar is on the terminal's own ground
-    if let Ok(me) = env::var("TMUX_PANE") {
-        for style in ["window-style", "window-active-style"] {
-            tmux(&["set-option", "-p", "-t", &me, style, "bg=default"]).ok();
-        }
-    }
     thread::spawn(|| loop {
         let last = Instant::now();
         prs::refresh().ok(); // errors go into the cache, the rail shows them
@@ -1253,6 +1247,10 @@ fn rail_input(wakes: &mut Wakes, binary: &Binary, focused: &mut bool, busy: bool
 pub fn rail() -> Res<()> {
     let mut term = ratatui::init();
     execute!(stdout(), event::EnableMouseCapture).ok();
+    // a card beside the terminal, which is on the terminal's own ground
+    if let Ok(me) = env::var("TMUX_PANE") {
+        tmux(&["set-option", "-p", "-t", &me, "window-style", &format!("bg={}", hex(theme::HULL))]).ok();
+    }
     let (mut sel, mut msg, mut busy) = (0usize, String::new(), None::<thread::JoinHandle<()>>);
     let (mut wakes, binary) = (Wakes::start(), Binary::now());
     let mut focused = active();
