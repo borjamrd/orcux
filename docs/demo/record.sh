@@ -212,8 +212,7 @@ switch() {
     press Enter; until_on '10400'; sleep 0.3
     shot 1500 'Opt t|a new tab, with the ports of its worktree'
     sleep 3                 # until the shell is still: something that printed looks at work for 3 s
-    # the shell's tab, hidden now, takes the window the agent leaves, and its activity for 3 s: until it settles
-    press M-a; until_on '┤ 1 ● agent'; sleep 3.5; until_on '2 zsh ─'
+    press M-a; until_on '┤ 1 ● agent'; sleep 0.3
     film 8 150 'Opt a  Opt d|previous and next tab'
 }
 
