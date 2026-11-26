@@ -33,7 +33,7 @@ orcux repo add
 orcux
 ```
 
-Press `n` to create a worktree, `⏎` to open it, and start your agent there. `?` lists everything else.
+Press `n` to create a worktree, `⏎` to open it, and start your agent there. `Opt+o` (or `?` in the sidebar) lists everything else.
 
 `orcux ui window` makes `orcux` open the window that orcux draws itself, the one in the image; `orcux ui classic` goes back to tmux's own. Inside tmux, `orcux` is always the classic one.
 

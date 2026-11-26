@@ -1804,7 +1804,7 @@ pub fn commands() -> Res<()> {
         match poll_input(if animated { 60 } else { 500 }) {
             Some(Input::Key(KeyCode::Esc)) if !query.is_empty() => query.clear(),
             Some(Input::Key(KeyCode::Esc)) => break Ok(()),
-            Some(Input::Key(KeyCode::Char('?'))) if query.is_empty() => break Ok(()), // as it opened
+            Some(Input::Key(KeyCode::Char('?' | 'ø'))) if query.is_empty() => break Ok(()), // as it opened
             Some(Input::Key(KeyCode::Char(c))) => {
                 query.push(c);
                 top = 0;

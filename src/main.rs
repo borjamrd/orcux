@@ -934,6 +934,10 @@ pub fn style_ui() -> Res<()> {
         "display-popup -E -b rounded -T '#[fg={foam}] Worktrees ' -w 60% -h 50% -s 'bg={hull},fg={foam}' -S 'bg={hull},fg={line}' \"'{}' switch\"",
         exe.display()
     );
+    let commands = format!(
+        "display-popup -E -b rounded -T '#[fg={foam}] {} ' -w 90% -h 90% -s 'bg={hull},fg={foam}' -S 'bg={hull},fg={line}' \"'{}' commands\"",
+        tr().title_commands, exe.display()
+    );
     let close = format!(
         "display-popup -E -b rounded -T '#[fg={foam}] {} ' -w 60% -h 10 -s 'bg={hull},fg={foam}' -S 'bg={hull},fg={line}' \"'{}' dialog close\"",
         tr().title_close, exe.display()
@@ -946,6 +950,8 @@ pub fn style_ui() -> Res<()> {
         (&["å", "M-a"], tab("prev")),
         (&["∂", "M-d"], tab("next")),
         (&["œ", "M-q"], close),
+        // the commands from any pane: "?" belongs to the program in the terminal (Claude Code shows its own)
+        (&["ø", "M-o"], commands),
         (&["®", "M-r"], format!("run-shell -b \"'{}' next >/dev/null 2>&1 || true\"", exe.display())),
         (&["MouseDown1Status"], tab("click #{mouse_status_range}")),
     ] {

@@ -163,7 +163,7 @@ fn key_name(k: &KeyEvent) -> Option<(bool, String)> {
     }
 }
 
-/// The keys that orcux binds in every pane (Opt+w, t, a, d, q, r): with Option as Meta, or the character that Option
+/// The keys that orcux binds in every pane (Opt+w, t, a, d, q, r, o): with Option as Meta, or the character that Option
 /// types on the Spanish and US layouts.
 #[derive(Debug, PartialEq, Clone, Copy)]
 enum Chord {
@@ -173,12 +173,13 @@ enum Chord {
     NextTab,
     CloseTab,
     Waiting,
+    Commands,
 }
 
 fn chord(k: &KeyEvent) -> Option<Chord> {
     let alt = k.modifiers.contains(KeyModifiers::ALT) && !k.modifiers.contains(KeyModifiers::CONTROL);
     let KeyCode::Char(c) = k.code else { return None };
-    let c = if alt { c } else { match c { 'æ' | '∑' => 'w', '†' => 't', 'å' => 'a', '∂' => 'd', 'œ' => 'q', '®' => 'r', _ => return None } };
+    let c = if alt { c } else { match c { 'æ' | '∑' => 'w', '†' => 't', 'å' => 'a', '∂' => 'd', 'œ' => 'q', '®' => 'r', 'ø' => 'o', _ => return None } };
     Some(match c {
         'w' => Chord::Switch,
         't' => Chord::NewTab,
@@ -186,6 +187,7 @@ fn chord(k: &KeyEvent) -> Option<Chord> {
         'd' => Chord::NextTab,
         'q' => Chord::CloseTab,
         'r' => Chord::Waiting,
+        'o' => Chord::Commands,
         _ => return None,
     })
 }
@@ -703,6 +705,7 @@ impl Window {
                     Chord::NextTab => step_tab(true),
                     Chord::CloseTab => popup(tr().title_close, (64, 10), &["dialog", "close"]),
                     Chord::Waiting => work::next(),
+                    Chord::Commands => popup(tr().title_commands, (158, 46), &["commands"]),
                 };
                 drop(r); // as with the classic bindings: nothing to say over the screen
             });
@@ -1014,6 +1017,7 @@ mod tests {
         assert_eq!(c(KeyCode::Char('w'), KeyModifiers::ALT), Some(Chord::Switch));
         assert_eq!(c(KeyCode::Char('∑'), KeyModifiers::NONE), Some(Chord::Switch));
         assert_eq!(c(KeyCode::Char('œ'), KeyModifiers::NONE), Some(Chord::CloseTab));
+        assert_eq!((c(KeyCode::Char('ø'), KeyModifiers::NONE), c(KeyCode::Char('o'), KeyModifiers::ALT)), (Some(Chord::Commands), Some(Chord::Commands)));
         assert_eq!(c(KeyCode::Char('w'), KeyModifiers::NONE), None);
         use vt100::{MouseProtocolEncoding as En, MouseProtocolMode as Mo};
         let m = MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: 9, row: 2, modifiers: KeyModifiers::NONE };
