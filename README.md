@@ -2,7 +2,7 @@
 
 Run several coding agents at once, each in a git worktree of its own. Ultra fast, ultra light, in the terminal you already use.
 
-![orcux: worktrees with what their agents do, Opt+r straight to the agent that asks, a diff commented line by line and handed to its agent, and its pull request one key away](docs/demo.gif)
+![orcux: worktrees with what their agents do on the left, the agent's terminal in the middle, your pull requests on the right; Opt+r straight to the agent that asks, a diff commented line by line and handed to its agent, and its pull request one key away](docs/demo.gif)
 
 - **A worktree per task**: branch, folder, terminal and 100 ports of its own, with one key.
 - **See who needs you**: working `●`, asking `?`, failed `!`, done `■`. One key takes you there.

@@ -13,8 +13,8 @@ unset TMUX TMUX_PANE ORCUX_MUX ORCUX_ID ORCUX_SLOT ORCUX_PORT GH_TOKEN GITHUB_TO
 export TMUX_TMPDIR="$HOME/.cache/orcux-demo"
 real_home=$HOME
 outer="$TMUX_TMPDIR/outer"
-COLS=${COLS:-112}
-ROWS=${ROWS:-30}
+COLS=${COLS:-140}                                    # the rail of pull requests shows from 140
+ROWS=${ROWS:-34}
 
 clean() {
     [ -d "$TMUX_TMPDIR" ] || return 0
@@ -40,7 +40,7 @@ if [ "${1:-}" != setup ]; then trap clean EXIT; trap 'exit 1' INT TERM; fi
 # a neutral prompt and names: nothing of the computer or the person shows
 mkdir -p "$HOME/bin" "$HOME/.demo"
 ln -s "$bin" "$HOME/bin/orcux"
-printf '#!/bin/sh\nexit 1\n' > "$HOME/bin/gh"            # no GitHub at all
+cp "$here/gh.sh" "$HOME/bin/gh"                        # made-up pull requests, and no GitHub at all
 printf '#!/bin/sh\nexit 0\n' > "$HOME/bin/osascript"     # no notifications
 chmod +x "$HOME/bin/gh" "$HOME/bin/osascript"
 cp /bin/bash "$HOME/bin/agent"                          # so that the tabs say "agent"
@@ -57,12 +57,12 @@ git config --global user.email demo@example.com
 git config --global init.defaultBranch main
 git config --global advice.detachedHead false
 
-# two repos, each with an origin of its own (a local bare repo: nothing leaves the computer)
+# two repos, each with an origin of its own: a local bare repo, under "github/" so that orcux asks gh for its PRs
 repo() {
-    git init -q --bare "$HOME/remote/$1.git"
+    git init -q --bare "$HOME/github/demo/$1.git"
     git init -q "$HOME/code/$1"
     cp -R "$here/$1/." "$HOME/code/$1/"
-    (cd "$HOME/code/$1" && git add -A && git commit -qm "First version" && git remote add origin "$HOME/remote/$1.git" \
+    (cd "$HOME/code/$1" && git add -A && git commit -qm "First version" && git remote add origin "$HOME/github/demo/$1.git" \
         && git push -q origin main && git remote set-head origin main)
 }
 repo shop
@@ -111,7 +111,7 @@ until_on() {
 # one frame, shown for some milliseconds, with a caption "keys|what they do"
 shot() {
     n=$((n + 1)); f=$(printf '%03d.ansi' $n)
-    tmux -S "$outer" capture-pane -e -p -t demo > "$frames/$f"
+    tmux -S "$outer" capture-pane -e -N -p -t demo > "$frames/$f"      # -N: the colored cells at the right end too
     printf '%s	%s	%s
 ' "$f" "$1" "${2:-}" >> "$frames/list.tsv"
 }
@@ -134,8 +134,10 @@ press Enter; until_on 'Run this command?'; sleep 0.5
 shot 1700 '⏎|straight to the agent that asks'
 press 1; until_on '12 passed'; until_on '┤ 1 ● agent'; sleep 0.3
 film 10 150 '1|answered: it works again'
-press M-r; until_on 'waits for your review'; sleep 0.6
-shot 1700 'Opt r|the next one: done'
+press M-r; until_on 'Waiting for you'; sleep 0.3
+shot 1300 'Opt r|the next one: done, and your PRs'
+press Enter; until_on 'waits for your review'; sleep 0.6
+shot 1500 '⏎|its answer'
 click 8 15; sleep 0.4; press f; until_on 'only changes'; sleep 0.8
 shot 1400 'f|its files and what changed'
 for _ in 1 2 3; do press j; sleep 0.15; shot 180 'f|its files and what changed'; done
