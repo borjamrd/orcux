@@ -25,7 +25,7 @@ Agents survive when the UI is closed: a server keeps the terminals, orcux's own 
 - `src/tui.rs`: the sidebar (`orcux sidebar`, the UI's left pane), the PR rail (`orcux rail`, right pane) and the dialogs. Colors come from `src/theme.rs` (design system "orcux"), also for tmux styles.
 - `src/i18n/`: every text the user sees, one file per language (`en`, `es`). Never write a user-facing literal elsewhere: add a field to `Text` (a missing translation does not compile) and use `tr().field`; texts with data are functions. Language: `ORCUX_LANG`, then `orcux lang <code>` (saved in `lang`), then the system, then English. The `every_language_fits` test checks widths.
 - `src/mark.rs`: the logo, the "o" of Fraunces Bold with an "x" as subscript, in braille dots with a gradient (`DEEP`, `CURRENT`, `FOAM`). Shown by `orcux welcome` (internal), the placeholder pane when no worktree is shown: it passes its keys to the sidebar. In the commands dialog it waves: its shape stays, and a light runs across it diagonally.
-- `src/agent.rs`: what agents say about themselves (working, question, permission, failed, done, idle): Claude Code through hooks, OpenCode through `src/opencode.js`, Gemini CLI and Codex by the title of their terminal (documented, not tested with the real ones).
+- `src/agent.rs`: what agents say about themselves (working, question, permission, failed, done, idle): Claude Code through hooks, OpenCode through `src/opencode.js`, Gemini CLI and Codex by the title of their terminal (documented, not tested with the real ones), and every agent without hooks by its screen (`from_screen`: signs seen in the real Antigravity, and in the texts of the others; mark source `screen`). A hidden pane is read only when it printed since the last read.
 - `src/config.rs`: `.orcux` in the main checkout (setup, teardown, link, port, env). Used only as approved with `orcux trust`, kept whole in `trusted/`, never through a hash. `trust` asks at a terminal.
 - `src/merge.rs`: `merge` (merge-tree first; merges exactly the commit it checked, then removes; never pushes) and `conflicts` (snapshots of uncommitted work through a temporary index: the agent's index is not touched).
 - `src/restore.rs`: the sidebar keeps `open.tsv` (tabs and conversations, with the id of the tmux server); with another server, they go to `lost.tsv` for `restore`. Conversations come from `@orcux_session`, `@orcux_model` and `@orcux_mode`, set from hook fields only: the command line can hold the text of a prompt.
@@ -112,7 +112,7 @@ tmux kill-server; rm -rf ~/.cache/orcux-test
 ## Known pending items (not done on purpose)
 
 - Docker Compose with fixed ports still collides; those ports would have to read `$ORCUX_PORT`.
-- Cursor and Antigravity tell nothing that orcux can read without changing the user's files: working = their screen moves.
+- Cursor and Antigravity have hooks, but only through files of the person (a plugin installed, `~/.cursor/hooks.json`): orcux reads their screen instead. Cursor's signs come from its code; it was not logged in to film it.
 - Globs in `.worktreeinclude` (`git ls-files -oi --exclude-from`).
 
 Deliberate simplifications are marked with `ponytail:` comments in the code.

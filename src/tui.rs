@@ -286,6 +286,8 @@ struct Seen {
     activity: u64,
     /// the mark whose dialog was seen on screen
     dialog: u64,
+    /// its activity when its screen was last read for `agent::by_screen`; 0: read it again
+    read: u64,
 }
 
 /// An interface is on screen: nothing else may be printed.
@@ -533,7 +535,12 @@ impl App {
             let hidden = quiet(if working { p.activity.max(s.since) } else { p.activity });
             let moved = !visible && asks.is_some_and(|(_, at)| hidden + 2 < quiet(at));
             let unseen = asks.is_some_and(|(_, at)| s.dialog != at);
-            let look = !exact && if visible { p.agent.is_none() || working || asks.is_some() } else { moved || unseen };
+            // an agent that only its screen tells about: read when it printed since, and once more after it stopped
+            let reads = agent::reads_screen(&p) && (visible || p.activity != s.read);
+            if reads && !visible {
+                s.read = if quiet(p.activity) >= 1 { p.activity } else { 0 };
+            }
+            let look = reads || !exact && if visible { p.agent.is_none() || working || asks.is_some() } else { moved || unseen };
             let text = look.then(|| tmux(&["capture-pane", "-p", "-t", &p.pane]).ok()).flatten();
             if visible && let Some(text) = &text {
                 let mut h = DefaultHasher::new();
@@ -548,6 +555,10 @@ impl App {
                 s.dialog = at;
             }
             let still = if visible { s.moved.map(quiet) } else { Some(hidden) };
+            if reads && let Some(text) = &text {
+                agent::by_screen(&mut p, text, still);
+            }
+            let exact = p.mark.split(' ').nth(2).is_some();
             let dialog = asks.is_some_and(|(_, at)| s.dialog == at);
             let (busy, new) = agent::settle(p.agent, exact, &Screen { still, text, dialog, visible: visible && watched }, now);
             p.busy = busy;

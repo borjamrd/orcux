@@ -119,3 +119,33 @@ title("\xe2\x97\x87 Ready (repo)"); sleep 60;
     lab.orcux(&["show", "other"]);
     assert!(!any(&lab, &["next"]).status.success());
 }
+
+#[test]
+fn screens_are_read_for_agents_that_tell_nothing() {
+    let Some(lab) = ready() else { return };
+    let script = lab.dir.join("bin/screened");
+    // as Antigravity draws: a spinner over "esc to cancel", a permission menu, then its prompt again
+    let perl = r#"#!/usr/bin/perl
+$| = 1;
+sub frame { print "\e[2J\e[H> task\n$_[0]\n----\n>\n----\n$_[1]   auto\n" }
+my @spin = ("\xe2\xa3\xb7", "\xe2\xa3\xaf", "\xe2\xa3\x9f");
+for my $i (0..15) { frame("$spin[$i % 3]  Generating...", "esc to cancel"); select(undef, undef, undef, 0.25); }
+frame("Requesting permission for:\n   rm -rf tmp\nRun this command?\n> 1. Yes, run command\n  2. No, cancel", "esc to cancel");
+my $answer = <STDIN>;
+frame("Ran (rm -rf tmp)\n  Done.", "? for shortcuts");
+sleep 60;
+"#;
+    lab::write_exe(&script, perl);
+    lab.orcux(&["agents", "set", "screened", &script.display().to_string()]);
+    lab.orcux(&["new", "other"]);
+    lab.tmux(&["-L", "outer", "-f", "/dev/null", "new-session", "-d", "-s", "o", "-x", "160", "-y", "42", &format!("env -u TMUX '{ORCUX}'")]);
+    until("the interface", || lab.tmux(&["-L", "outer", "capture-pane", "-p", "-t", "o"]).contains("other"));
+    lab.orcux(&["run", "screened", "--agent", "screened"]);
+    let state = || out(&lab.orcux(&["ls", "--json"])).split("\"name\":\"screened\"").nth(1).unwrap_or("").split("\"tabs\"").next().unwrap_or("").to_string();
+    until("works", || state().contains("working"));
+    until("needs permission", || state().contains("permission"));
+    let w = any(&lab, &["wait", "screened", "--timeout", "5"]);
+    assert_eq!(w.status.code(), Some(2), "{}", out(&w));
+    lab.orcux(&["send", "screened", "1"]);
+    until("is done", || state().contains("idle") || state().contains("done"));
+}

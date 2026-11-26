@@ -56,8 +56,9 @@ Claude Code agents get this as a skill in the terminals of orcux. For the others
 | --- | --- |
 | Claude Code | from its hooks |
 | OpenCode | from a plugin, exactly |
-| Gemini CLI, Codex | from the title of their terminal, as documented; not tested with the real ones yet |
-| others | only whether their screen moves |
+| Antigravity | from its screen: when it works, asks permission or a question |
+| Gemini CLI, Codex, Cursor | from their title and their screen, as documented; not tested with the real ones yet |
+| others | from their screen if it shows the usual signs (`esc to interrupt`, `[y/N]`…), else only whether it moves |
 
 Nothing in your settings is changed. `orcux notify off` turns notifications off; `all` also tells when an agent is done.
 
