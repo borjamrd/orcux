@@ -44,4 +44,14 @@ orcux
 
 `n` new worktree · `⏎` open it · `Opt+o` every command
 
+## More in motion
+
+**Move between worktrees**: `Opt+w` finds one by its name or its pull request, `Opt+w ⏎` goes back and forth, `Opt+t` opens a tab with the ports of its worktree.
+
+![orcux: Opt+w finds a worktree by name or by pull request and shows it; a new tab prints the worktree's port](docs/demo-switch.gif)
+
+**Sub-agents**: an agent hands parts of its task to others with `orcux run --parent`, each in a child worktree under its own, and waits for them.
+
+![orcux: an agent creates three child worktrees with an agent each; they work, end one after the other, and the first agent sums up](docs/demo-agents.gif)
+
 More in the [guide](docs/guide.md). [MIT](LICENSE).
