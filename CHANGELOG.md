@@ -1,10 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
-- `orcux ssh <machine>`: orcux on another machine, installed there if it is missing; over SSH a click on an address copies it.
+- `compose = docker-compose.yml` in `.orcux`: several worktrees run the same Docker Compose file at once, each on ports of its own; `PORT_<SERVICE>_<PORT>` tells where each one went.
+- `orcux ssh <machine>`: orcux on another machine, installed there if it is missing; its agents go on when the connection drops. Over SSH a click on an address copies it.
 - `.worktreeinclude` takes patterns as in `.gitignore` (`*.env`, `!keep.env`), not only paths.
-- `compose = docker-compose.yml` in `.orcux`: several worktrees run the same Docker Compose file at once, each on ports of its own.
+- The first steps go away as soon as `x` hides them.
+- The README in Spanish, and why macOS may ask for permissions in the name of orcux, in the guide.
 
 ## 0.3.0
 
