@@ -425,6 +425,12 @@ pub fn run() -> Res<()> {
         }
     });
     let mut term = ratatui::init();
+    // a panic must not leave the mouse on in the person's shell: ratatui's own hook restores the rest
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        execute!(stdout(), DisableMouseCapture, DisableBracketedPaste).ok();
+        hook(info);
+    }));
     execute!(stdout(), EnableBracketedPaste, EnableMouseCapture).ok();
     let res = Window::new().run(&mut term, &mut link, &rx);
     execute!(stdout(), DisableMouseCapture, DisableBracketedPaste).ok();
@@ -736,13 +742,15 @@ impl Window {
                 }
             }
         }
-        // the frame of the terminal: its sides are the lines that the sidebar and the rail draw in their own columns
+        // the frame of the terminal: its sides are on the last column of the sidebar and the first of the rail
         let side = shown.iter().find(|p| p.mark == "__sidebar").map(|p| p.at.0 + p.at.2 - 1);
         let rail = shown.iter().find(|p| p.mark == "__prs").map(|p| p.at.0);
         let terminal = shown.iter().find(|p| p.mark != "__sidebar" && p.mark != "__prs");
         let buf = f.buffer_mut();
         let put = |buf: &mut Buffer, x: u16, y: u16, s: &str, st: Style| { if let Some(c) = buf.cell_mut((x, y)) { c.set_symbol(s).set_style(st); } };
-        let line = Style::new().fg(blue);
+        // the accent while the terminal has the focus
+        let focused = terminal.is_some_and(|t| t.active);
+        let line = Style::new().fg(if focused { blue } else { Color::from_u32(theme::LINE) });
         let (left, right) = (side.unwrap_or(0), rail.unwrap_or(area.width.saturating_sub(1)));
         let bottom = area.height.saturating_sub(1);
         for x in left..=right {
@@ -752,11 +760,10 @@ impl Window {
         for (x, y, s) in [(left, 0, "╭"), (right, 0, "╮"), (left, bottom, "╰"), (right, bottom, "╯")] {
             put(buf, x, y, s, line);
         }
-        if side.is_none() {
-            for y in 1..bottom { put(buf, left, y, "│", line); }
-        }
-        if rail.is_none() {
-            for y in 1..bottom { put(buf, right, y, "│", line); }
+        // the sides over the lines that the sidebar and the rail draw, in the color of the rest
+        for y in 1..bottom {
+            put(buf, left, y, "│", line);
+            put(buf, right, y, "│", line);
         }
         // the logo over the sidebar, the tabs on the frame, the title of the rail
         for (x, s, st) in [(2, "⢎", Style::new().fg(blue)), (3, "⡱", Style::new().fg(foam)), (5, "orcux", Style::new().fg(foam).bold())] {
@@ -769,6 +776,12 @@ impl Window {
             for p in tabs(&t.mark) {
                 let name = format!(" {} {} ", p.tab, tui::program(&p.cmd));
                 let w = Span::raw(&name).width() as u16;
+                // no room left before the corner: say that there are more
+                if x + w + 6 > right {
+                    buf.set_string(x, 0, " … ", Style::new().fg(muted));
+                    x += 3;
+                    break;
+                }
                 let start = x;
                 if p.pane == t.pane {
                     buf.set_string(x, 0, "┤", line);
