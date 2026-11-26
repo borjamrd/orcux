@@ -73,3 +73,36 @@ fn fifty_terminals_cost_nothing_at_rest() {
     assert!(show[4] < Duration::from_millis(100) * room(), "`orcux show` took {:?}", show[4]);
     assert!(start < Duration::from_secs(1) * room(), "it took {start:?} to start");
 }
+
+#[test]
+#[ignore]
+fn the_window_costs_nothing_at_rest() {
+    let lab = Lab::new();
+    lab.run("git", &["init", "-q", "."]);
+    lab.run("git", &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "i"]);
+    for i in 0..10 {
+        lab.orcux(&["new", &format!("w{i}")]);
+        for _ in 1..TERMINALS / 10 {
+            lab.orcux(&["tab", "new", &format!("w{i}")]);
+        }
+    }
+    let started = Instant::now();
+    // another session of the same server plays the person's terminal
+    lab.tmux(&["new-session", "-d", "-s", "outer", "-x", "160", "-y", "42", env!("CARGO_BIN_EXE_orcux"), "window"]);
+    while !lab.tmux(&["capture-pane", "-p", "-t", "=outer:"]).contains("w9") {
+        assert!(started.elapsed().as_secs() < 10, "it did not start");
+        sleep(Duration::from_millis(20));
+    }
+    let start = started.elapsed();
+    sleep(Duration::from_secs(8));
+    let pid: u32 = lab.tmux(&["display-message", "-p", "-t", "=outer:", "#{pane_pid}"]).trim().parse().unwrap();
+    let before = cpu(pid);
+    fs::remove_file(lab.dir.join("log")).ok();
+    sleep(Duration::from_secs(WATCH));
+    let calls = fs::read_to_string(lab.dir.join("log")).unwrap_or_default();
+    let used = (cpu(pid) - before) / WATCH as f64;
+    println!("window: start {start:?}, CPU {:.2} %, {} tmux processes in {WATCH} s", used * 100.0, calls.lines().count());
+    assert!(calls.is_empty(), "tmux processes at rest:\n{calls}");
+    assert!(used <= CPU * f64::from(room()), "CPU at rest: {used}");
+    assert!(start < Duration::from_secs(1) * room(), "it took {start:?} to start");
+}

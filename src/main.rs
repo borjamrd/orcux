@@ -10,6 +10,7 @@ mod prs;
 mod restore;
 mod theme;
 mod tui;
+mod window;
 mod work;
 
 use std::{collections::BTreeMap, env, fs, path::{Path, PathBuf}, process::Command, thread, time::Duration};
@@ -169,9 +170,11 @@ pub fn tmux(args: &[&str]) -> Res<String> {
 pub fn viewer() -> Option<(String, u32, u32)> {
     let f = "#{client_control_mode}\t#{client_activity}\t#{client_name}\t#{client_width}\t#{client_height}";
     let all = tmux(&["list-clients", "-t", UI, "-F", f]).ok()?;
+    // `orcux window` is a control client of its own; with a terminal attached too, the last one used is the person's
+    let window = tmux(&["show-option", "-gqv", window::CLIENT]).unwrap_or_default();
     let people = all.lines().filter_map(|l| {
         let [control, at, name, w, h] = l.split('\t').collect::<Vec<_>>()[..] else { return None };
-        (control != "1").then(|| Some((at.parse::<u64>().ok()?, name.to_string(), w.parse().ok()?, h.parse().ok()?)))?
+        (control != "1" || (!window.is_empty() && name == window)).then(|| (at.parse::<u64>().unwrap_or(0), name.to_string(), w.parse().unwrap_or(0), h.parse().unwrap_or(0)))
     });
     people.max_by_key(|c| c.0).map(|(_, name, w, h)| (name, w, h))
 }
@@ -693,6 +696,8 @@ pub fn panes() -> Vec<Pane> {
             Pane { pane, wt, tab, on, busy, cmd, agent, mark, title, session, shell, activity }
         })
         .filter(|p| !p.wt.is_empty())
+        // a window linked in two sessions (a view of `orcux window`) lists its pane twice
+        .filter({ let mut seen = std::collections::HashSet::new(); move |p: &Pane| seen.insert(p.pane.clone()) })
         .collect()
 }
 
@@ -709,7 +714,7 @@ fn pane_of(id: &str) -> Option<String> {
 }
 
 /// "wt" or "wt:2" (git refs cannot contain ':').
-fn target(q: &str) -> Res<(Wt, Option<u32>)> {
+pub fn target(q: &str) -> Res<(Wt, Option<u32>)> {
     match q.rsplit_once(':').and_then(|(w, n)| Some((w, n.parse().ok()?))) {
         Some((w, n)) => Ok((find(Some(w))?, Some(n))),
         None => Ok((find(Some(q))?, None)),
@@ -717,7 +722,7 @@ fn target(q: &str) -> Res<(Wt, Option<u32>)> {
 }
 
 /// The pane of that tab, or of the active one, which is opened if there is none.
-fn pane_at(w: &Wt, tab: Option<u32>) -> Res<String> {
+pub fn pane_at(w: &Wt, tab: Option<u32>) -> Res<String> {
     let Some(n) = tab else { return ensure_pane(w) };
     let t = tabs(&w.id()).into_iter().find(|p| p.tab == n);
     t.map(|p| p.pane).ok_or_else(|| (tr().no_tab)(&format!("{}:{n}", w.id())))
@@ -978,6 +983,9 @@ pub fn show_tab(w: &Wt, tab: Option<u32>) -> Res<()> {
 
 /// Runs `orcux <args>` in a tmux popup centered over the whole UI (the sidebar alone is too narrow). Blocks until closed.
 pub fn popup(title: &str, want: (u32, u32), args: &[&str]) -> Res<()> {
+    if window::client().is_some_and(|w| viewer().is_some_and(|v| v.0 == w.0)) {
+        return window::popup(title, want, args);
+    }
     let exe = env::current_exe().map_err(|e| e.to_string())?;
     // tmux rejects a popup larger than the client instead of clamping it
     let (client, w, h) = viewer().ok_or(tr().no_pane)?;
@@ -1222,7 +1230,20 @@ pub fn set_tab_bar(bar: &str) {
     tmux(&["set-option", "-t", &format!("{UI}:"), "@orcux_bar", bar]).ok();
 }
 
+/// The interface that `orcux` opens: ORCUX_UI, else what `orcux ui` saved, else the classic one.
+fn ui_choice() -> String {
+    env::var("ORCUX_UI").ok().filter(|u| UIS.contains(&u.as_str()))
+        .or_else(|| read_state("ui").ok().map(|s| s.trim().to_string()).filter(|u| UIS.contains(&u.as_str())))
+        .unwrap_or_else(|| UIS[0].into())
+}
+
+const UIS: [&str; 2] = ["classic", "window"];
+
 fn attach() -> Res<()> {
+    // inside tmux the window would be drawn inside a pane: the classic switch is what fits there
+    if ui_choice() == "window" && env::var("TMUX").is_err() {
+        return window::run();
+    }
     ensure_ui()?;
     if env::var("TMUX").is_ok() {
         tmux(&["switch-client", "-t", UI]).map(|_| ())
@@ -1330,6 +1351,15 @@ fn cli(a: &[&str]) -> Res<()> {
             theme::set_icons(which)?;
             restart_panes()
         }
+        ["ui"] => {
+            println!("{}", (tr().ui_now)(&ui_choice(), &UIS.join(", ")));
+            Ok(())
+        }
+        ["ui", which] if UIS.contains(which) => {
+            write_state("ui", which)?;
+            println!("{}", (tr().ui_now)(which, &UIS.join(", ")));
+            Ok(())
+        }
         ["lang"] => {
             println!("{}", (tr().lang_now)(i18n::code(), &i18n::codes()));
             Ok(())
@@ -1361,6 +1391,7 @@ fn cli(a: &[&str]) -> Res<()> {
             let (w, n) = target(q)?;
             close_tab(&w, n.ok_or(tr().which_tab)?)
         }
+        ["window"] => window::run(),
         ["tab", "click", range] => click_tab(range),
         ["tab", "next"] => step_tab(true),
         ["tab", "prev"] => step_tab(false),
