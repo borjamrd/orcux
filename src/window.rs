@@ -852,7 +852,9 @@ pub fn popup(title: &str, (w, h): (u32, u32), args: &[&str]) -> Res<()> {
     a.push(cmd);
     let ids = tmux(&a.iter().map(String::as_str).collect::<Vec<_>>())?;
     let (window, pane) = ids.split_once(' ').ok_or(tr().no_pane)?;
-    let (cw, ch) = tmux(&["display-message", "-p", "-t", UI, "#{window_width} #{window_height}"]).ok()
+    // the size of the interface: asked through the sidebar, whose window it is (the session would answer for the new one)
+    let main = ui_pane(SIDEBAR).unwrap_or_else(|| UI.to_string());
+    let (cw, ch) = tmux(&["display-message", "-p", "-t", &main, "#{window_width} #{window_height}"]).ok()
         .and_then(|s| { let (a, b) = s.split_once(' ')?; Some((a.parse::<u32>().ok()?, b.parse::<u32>().ok()?)) }).unwrap_or((80, 24));
     let size = ((w - 2).min(cw.saturating_sub(6)), (h - 2).min(ch.saturating_sub(2)));
     for (k, v) in [("window-size", "manual".to_string()), ("@orcux_popup", title.to_string())] {
