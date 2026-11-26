@@ -526,9 +526,12 @@ impl Window {
                         s.syncing = on.then(Instant::now);
                     }
                     if let Some(p) = &mut s.parser {
-                        let b = if std::mem::take(&mut s.fresh) { after_seed(&b) } else { &b[..] };
-                        p.process(b);
-                        if leaves_alternate(b) {
+                        let fresh = std::mem::take(&mut s.fresh);
+                        let kept = if fresh { after_seed(&b) } else { &b[..] };
+                        // cut in the middle of something (a sequence, a character): what tmux has now is whole
+                        let cut = fresh && (kept.len() < b.len() || b.first().is_some_and(|c| (0x80..0xc0).contains(c)));
+                        p.process(kept);
+                        if leaves_alternate(kept) || cut {
                             self.resync(link, &id)?;
                         }
                     }
