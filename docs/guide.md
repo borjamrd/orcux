@@ -101,7 +101,7 @@ A child goes into its parent, the others into the main branch. Nothing is pushed
 
 ## After a restart
 
-orcux remembers which terminals were open and which conversations their agents had. Press `R` on the empty screen, or run `orcux restore`, and Claude Code and OpenCode go on where they were.
+orcux remembers which terminals were open and which conversations their agents had. Press `R` on the empty screen, or run `orcux restore`, and Claude Code, OpenCode and Antigravity go on with their conversation; Codex and Gemini CLI with the last one of their folder.
 
 ## Pull requests
 

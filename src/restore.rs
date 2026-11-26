@@ -46,7 +46,7 @@ impl Keeper {
             // beside what an earlier one left and nobody brought back
             let _lock = lock();
             let mut lost = parse(&read_state("lost.tsv").unwrap_or_default()).1;
-            lost.retain(|o| !o.session.is_empty() && !all.iter().any(|n| id_of(&n.session) == id_of(&o.session)));
+            lost.retain(|o| !o.session.is_empty() && !all.iter().any(|n| key(n) == key(o)));
             lost.extend(all);
             write_state("lost.tsv", &text("", &lost)).ok();
         }
@@ -58,7 +58,7 @@ impl Keeper {
             return;
         }
         let mut all: Vec<Open> = panes.iter().map(|p| Open {
-            wt: p.wt.clone(), tab: p.tab, on: p.on, session: if p.shell { String::new() } else { p.session.clone() },
+            wt: p.wt.clone(), tab: p.tab, on: p.on, session: session_of(p),
         }).collect();
         all.sort_by(|a, b| (&a.wt, a.tab).cmp(&(&b.wt, b.tab)));
         let now = text(&self.server, &all);
@@ -72,13 +72,60 @@ impl Keeper {
 fn missing(all: Vec<Open>, live: &[Pane]) -> Vec<Open> {
     let wts = load();
     all.into_iter().filter(|o| wts.iter().any(|w| w.id() == o.wt && w.path().exists())).filter(|o| {
-        if o.session.is_empty() { !live.iter().any(|p| p.wt == o.wt) } else { !live.iter().any(|p| id_of(&p.session) == id_of(&o.session)) }
+        if o.session.is_empty() { !live.iter().any(|p| p.wt == o.wt) } else { !live.iter().any(|p| key(&Open { wt: p.wt.clone(), tab: p.tab, on: p.on, session: session_of(p) }) == key(o)) }
     }).collect()
 }
 
-/// Program and conversation, without how it was open.
-fn id_of(session: &str) -> String {
-    session.split('|').take(2).collect::<Vec<_>>().join("|")
+/// Program and conversation, without how it was open. "The last one of its folder" is one per worktree.
+fn key(o: &Open) -> String {
+    let id = o.session.split('|').take(2).collect::<Vec<_>>().join("|");
+    if id.ends_with("|last") { format!("{id}|{}", o.wt) } else { id }
+}
+
+/// The conversation of a tab. Claude Code and OpenCode tell theirs. For agents without hooks: Antigravity's is read
+/// from its own history (never written), and Codex and Gemini CLI go on with the last one of their folder, where they
+/// keep them.
+fn session_of(p: &Pane) -> String {
+    if p.shell {
+        return String::new();
+    }
+    if !p.session.is_empty() {
+        return p.session.clone();
+    }
+    match tui::program(&p.cmd) {
+        "agy" => find(Some(&p.wt)).ok().and_then(|w| agy_conversation(&w.path())).map(|id| format!("agy|{id}|||")).unwrap_or_default(),
+        name @ ("codex" | "gemini") => format!("{name}|last|||"),
+        _ => String::new(),
+    }
+}
+
+/// The last conversation of Antigravity in a folder, from the end of its history: one line per prompt, with its
+/// folder and its conversation. Read again only when the file changes.
+fn agy_conversation(dir: &Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    type Seen = Option<(std::time::SystemTime, Vec<(String, String)>)>;
+    static SEEN: std::sync::Mutex<Seen> = std::sync::Mutex::new(None);
+    let path = home().join(".gemini/antigravity-cli/history.jsonl");
+    let at = fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+    let mut seen = SEEN.lock().ok()?;
+    if seen.as_ref().map(|s| s.0) != Some(at) {
+        let mut f = fs::File::open(&path).ok()?;
+        let len = f.metadata().ok()?.len();
+        f.seek(SeekFrom::Start(len.saturating_sub(256 * 1024))).ok()?;
+        let mut text = String::new();
+        f.take(256 * 1024).read_to_string(&mut text).ok()?;
+        *seen = Some((at, conversations(&text)));
+    }
+    let dir = dir.to_string_lossy();
+    seen.as_ref()?.1.iter().rev().find(|(w, _)| *w == dir).map(|(_, id)| id.clone())
+}
+
+/// (folder, conversation) of each line of Antigravity's history, in order.
+fn conversations(text: &str) -> Vec<(String, String)> {
+    text.lines().filter_map(|l| {
+        let (w, id) = (agent::field(l, "workspace")?, agent::field(l, "conversationId")?);
+        is_word(id).then(|| (w.to_string(), id.to_string()))
+    }).collect()
 }
 
 /// What can be opened again: its worktree is still there.
@@ -110,6 +157,9 @@ pub fn resume(session: &str) -> Option<String> {
             Some(format!("{dir}command claude{}{} --resume {id}", option("--model", model), option("--permission-mode", mode)))
         }
         "opencode" => Some(format!("opencode --session {id}")),
+        "agy" => Some(format!("agy --conversation {id}")),
+        "codex" if id == "last" => Some("codex resume --last".into()),
+        "gemini" if id == "last" => Some("gemini --resume latest".into()),
         _ => None,
     }
 }
@@ -189,6 +239,11 @@ mod tests {
         assert_eq!(resume("claude|ab-1||claude-opus[1m]|plan").unwrap(), "command claude --model 'claude-opus[1m]' --permission-mode 'plan' --resume ab-1");
         assert_eq!(resume("claude|ab-1|/it's||").unwrap(), "CLAUDE_CONFIG_DIR='/it'\\''s' command claude --resume ab-1");
         assert_eq!(resume("opencode|ses_1|||").unwrap(), "opencode --session ses_1");
+        assert_eq!(resume("agy|34055f3e-4fcf|||").unwrap(), "agy --conversation 34055f3e-4fcf");
+        assert_eq!((resume("codex|last|||").unwrap().as_str(), resume("gemini|last|||").unwrap().as_str()), ("codex resume --last", "gemini --resume latest"));
+        assert_eq!(resume("codex|abc|||"), None);
+        let history = "{\"display\":\"say \\\"workspace\\\":\\\"/x\\\"\",\"timestamp\":1,\"workspace\":\"/w/a\",\"conversationId\":\"c-1\"}\n{\"workspace\":\"/w/b\",\"conversationId\":\"c-2\"}\n{\"workspace\":\"/w/a\",\"conversationId\":\"c;3\"}\nhalf a li";
+        assert_eq!(conversations(history), [("/w/a".to_string(), "c-1".to_string()), ("/w/b".to_string(), "c-2".to_string())]);
         for bad in ["claude|a;b|||", "claude||||", "vim|1|||", "", "claude|$(id)|||", "claude|--dangerously-skip-permissions|||", "claude|a|||--x y|z"] {
             assert_eq!(resume(bad), None, "{bad}");
         }
