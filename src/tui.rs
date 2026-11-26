@@ -1474,7 +1474,7 @@ pub fn rail() -> Res<()> {
             (KeyCode::Char('w'), Some(p)) if p.worktree(&wts).is_some() => Ok(()),
             (KeyCode::Char('w'), Some(p)) if p.fork => Err(tr().fork.into()),
             (KeyCode::Char('w'), Some(p)) => {
-                popup(tr().title_pr, DIALOG, &["dialog", "pr", &p.path.to_string_lossy(), &p.branch, &format!("#{} {}", p.number, p.title)])
+                popup(tr().title_pr, DIALOG, &["dialog", "pr", &p.path.to_string_lossy(), &p.branch, &format!("#{} {}", p.number, p.title), &p.login])
             }
             _ => Ok(()),
         };
@@ -1845,7 +1845,7 @@ pub fn dialog_view(url: &str) -> Res<()> {
                 KeyCode::Char('w') if wt.is_none() && ask.is_none() => {
                     if p.fork {
                         msg = tr().fork.into();
-                    } else if create_view(term, &p.path, &p.branch, &format!("#{} {}", p.number, p.title))? {
+                    } else if create_view(term, &p.path, &p.branch, &format!("#{} {}", p.number, p.title), &p.login)? {
                         break Ok(());
                     }
                 }
@@ -2353,12 +2353,12 @@ pub fn dialog_rm_repo(repo: &Path) -> Res<()> {
     })
 }
 
-pub fn dialog_pr(repo: &Path, branch: &str, label: &str) -> Res<()> {
-    dialog(|term| create_view(term, repo, branch, label).map(|_| ()))
+pub fn dialog_pr(repo: &Path, branch: &str, label: &str, login: &str) -> Res<()> {
+    dialog(|term| create_view(term, repo, branch, label, login).map(|_| ()))
 }
 
 /// Asks and creates the worktree of a PR; whether it did.
-fn create_view(term: &mut ratatui::DefaultTerminal, repo: &Path, branch: &str, label: &str) -> Res<bool> {
+fn create_view(term: &mut ratatui::DefaultTerminal, repo: &Path, branch: &str, label: &str, login: &str) -> Res<bool> {
     let repo_name = repo.file_name().unwrap_or_default().to_string_lossy().to_string();
     let port = 10000 + free_slot(&load()) * 100;
     let mut err = String::new();
@@ -2376,7 +2376,7 @@ fn create_view(term: &mut ratatui::DefaultTerminal, repo: &Path, branch: &str, l
             Some(KeyCode::Esc) => return Ok(false),
             Some(KeyCode::Enter) => {
                 draw_dialog(term, lines(Line::from(tr().fetching).fg(CURRENT)), "")?;
-                match create_for_pr(repo, branch).and_then(|w| show(&w)) {
+                match create_for_pr(repo, branch, login).and_then(|w| show(&w)) {
                     Ok(()) => return Ok(true),
                     Err(e) => err = short(&e),
                 }

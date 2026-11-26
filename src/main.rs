@@ -461,9 +461,11 @@ pub fn free_slot(wts: &[Wt]) -> u32 {
 }
 
 /// Worktree for a PR's branch. Fetches it first: an unknown branch would otherwise start from origin/HEAD.
-pub fn create_for_pr(repo: &Path, branch: &str) -> Res<Wt> {
+/// As the gh account that read the PR: git asks gh for credentials, and gh would answer as the active account (or
+/// GH_TOKEN), which may not see that repo ("repository not found").
+pub fn create_for_pr(repo: &Path, branch: &str, login: &str) -> Res<Wt> {
     let spec = format!("+refs/heads/{branch}:refs/remotes/origin/{branch}");
-    run("env", &["GIT_TERMINAL_PROMPT=0", "git", "fetch", "origin", &spec], Some(repo))?;
+    prs::git_as(login, repo, &["fetch", "origin", &spec])?;
     create(repo, branch, None)
 }
 
@@ -1510,7 +1512,7 @@ fn cli(a: &[&str]) -> Res<()> {
         ["dialog", "agent"] => tui::dialog_agent(),
         ["dialog", "skill"] => tui::dialog_skill(),
         ["dialog", "openpr", id] => tui::dialog_open_pr(&find(Some(id))?),
-        ["dialog", "pr", repo, branch, label] => tui::dialog_pr(Path::new(repo), branch, label),
+        ["dialog", "pr", repo, branch, label, login] => tui::dialog_pr(Path::new(repo), branch, label, login),
         ["dialog", "view", url] => tui::dialog_view(url),
         ["dialog", "diff", dir, path] => review::show(Path::new(dir), path),
         ["dialog", "close"] => tui::dialog_close(),
