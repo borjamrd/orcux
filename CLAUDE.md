@@ -45,6 +45,7 @@ Model:
 - Each worktree pane carries the pane option `@orcux=<repo>/<name>`; the sidebar carries `@orcux=__sidebar` and the rail `@orcux=__prs`. Panes are always found through that marker, never by index.
 - Showing a worktree = `swap-pane` between its pane and the right-hand one. If the one leaving is the placeholder (empty `@orcux`), it is killed.
 - State in plain files in `~/.local/state/orcux/`: `worktrees.tsv` (repo, name, slot), `repos`, `folded` (folders and repos folded in the sidebar), `recent` (ids by last `show`) and `prs.2.tsv` (cache).
+- The selected worktree has a second line with its branch (and its port); what its agent and its PR do is in the glyphs of its first line, not written out.
 - The worktree in the terminal has a bar of the accent at the left edge of its rows and its name in bold, wherever the selection is (`self.visible`).
 - The sidebar takes the mouse: a click selects a row, a click on the selected one opens it (like Enter); the wheel moves.
 - Opt+t/a/d/q: new, previous, next and close tab. Opt+r: the agent that waits. Opt+o: the commands (`?` only in the sidebar: in a terminal it is the program's, and Claude Code has its own). Only letters whose Option character is the same on the Spanish and US layouts (Opt+x on Spanish types `∑`, which is Opt+w on US).

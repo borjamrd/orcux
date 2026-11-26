@@ -706,20 +706,16 @@ impl App {
         let branch = format!("{stem}{}", if *last { "╰── " } else { "├── " });
         let mut lines = vec![lr(width, vec![bar(), fg(branch, LINE), name], right)];
         if selected {
-            let text = match (pr, self.foremost(&id)) {
+            // its branch: what it does is in its glyphs already
+            let stem2 = format!("{stem}{}", if *last { "    " } else { "│   " });
+            let port = format!(" {} ", w.port());
+            let room = (width as usize).saturating_sub(1 + Span::raw(&stem2).width() + Span::raw(&port).width() + 1);
+            let text = match w.branch() {
                 _ if gone => fg(tr().gone, CORAL),
-                (_, Some(p)) if matches!(p.look(), State::Asking | State::Broken | State::Finished) => {
-                    let (a, at) = p.agent.unwrap_or((Agent::Done, prs::now()));
-                    let ago = (tr().ago)(&prs::ago(prs::now().saturating_sub(at)));
-                    fg(format!("{}, {ago}", a.text()), look(p.look()).1)
-                }
-                (Some((number, (_, s, text))), _) => fg(format!("#{number} {text}"), look(s).1),
-                (None, None) => fg(tr().unopened, MUTED),
-                (None, Some(p)) if p.busy => fg((tr().working)(program(&p.cmd)), CURRENT),
-                (None, Some(p)) => fg((tr().idle)(program(&p.cmd)), MUTED),
+                Some(b) => fg(fit(&b, room), MUTED),
+                None => fg(tr().detached, MUTED),
             };
-            let branch = format!("{stem}{}", if *last { "    " } else { "│   " });
-            lines.push(lr(width, vec![bar(), fg(branch, LINE), text], vec![fg(format!(" {} ", w.port()), MUTED)]));
+            lines.push(lr(width, vec![bar(), fg(stem2, LINE), text], vec![fg(port, MUTED)]));
         }
         lines
     }
