@@ -1033,6 +1033,19 @@ pub fn run() -> Res<()> {
 
 // ---------- switcher: the list of worktrees behind Opt+w (`orcux switch`) ----------
 
+/// The programs open in some tabs, other than a shell, each once: "claude", "claude codex". Empty if none. How many
+/// tabs there are is said beside it.
+fn sessions<'a>(tabs: impl Iterator<Item = &'a Pane>) -> String {
+    let mut names: Vec<String> = vec![];
+    for p in tabs.filter(|p| !p.shell && !p.cmd.is_empty()) {
+        let n = program(&p.cmd).to_string();
+        if !names.contains(&n) {
+            names.push(n);
+        }
+    }
+    names.join(" ")
+}
+
 pub fn switch() -> Res<()> {
     let visible = terminal_pane().map(|p| p.1).unwrap_or_default();
     let (wts, prs, live) = (by_recent(&visible), prs::cached().prs, panes());
@@ -1064,7 +1077,9 @@ pub fn switch() -> Res<()> {
                     left.push(fg(format!("  {}", tr().unopened), MUTED));
                 }
                 let here = if id == visible { format!("{}  ", tr().visible) } else { String::new() };
-                items.push((vec![lr(w, left, vec![fg(format!(" {here}{} {} ", times(tabs_of(&id)), wt.port()), MUTED)])], i == cur));
+                // the sessions open in it: the programs of its tabs that are not a shell (claude, codex…)
+                let right = vec![fg(sessions(live.iter().filter(|p| p.wt == id)), FOAM), fg(format!(" {here}{} {} ", times(tabs_of(&id)), wt.port()), MUTED)];
+                items.push((vec![lr(w, left, right)], i == cur));
             }
             if hits.is_empty() {
                 let t = if wts.is_empty() { tr().no_worktrees } else { tr().no_match };
