@@ -2143,48 +2143,61 @@ pub fn dialog_open_pr(w: &Wt) -> Res<()> {
     })
 }
 
-/// The agent that `orcux run` starts: one of those orcux knows, or the person's own command (an alias, a wrapper).
+/// The agent that `orcux run` starts. `e` edits the command of one (`claudep` instead of `claude`: an alias, a wrapper);
+/// the last row adds one that orcux does not know.
 pub fn dialog_agent() -> Res<()> {
-    let all = work::agents();
+    let mut all = work::agents();
     let chosen = work::default_agent();
     let mut sel = all.iter().position(|a| a.0 == chosen).unwrap_or(0);
-    let mut own = None::<String>;
+    // what is being written: the command of a row, or "name command" of a new one in the last
+    let mut typing = None::<String>;
+    let mut err = String::new();
     dialog(|term| loop {
+        let own = work::own_agents();
         term.draw(|f| {
             let [list, foot] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(f.area());
+            let w = f.area().width;
             let mut lines: Vec<Line> = all.iter().enumerate().map(|(i, (name, cmd))| {
-                let here = work::installed(cmd);
-                let mut l = Line::from(vec![
+                let (here, mine) = (work::installed(cmd), own.contains(name));
+                let (state, color) = if mine { (tr().agent_yours, CURRENT) } else if here { (tr().agent_here, KELP) } else { (tr().agent_missing, MUTED) };
+                let shown = match &typing { Some(t) if i == sel => format!("{t}▏"), _ => cmd.clone() };
+                let l = Line::from(vec![
                     fg(if *name == chosen { " ● " } else { "   " }, CURRENT),
-                    fg(format!("{name:<10}"), if here { FOAM } else { MUTED }).bold(),
-                    fg(format!("{:<12}", if here { tr().agent_here } else { tr().agent_missing }), if here { KELP } else { MUTED }),
-                    fg(cmd.clone(), MUTED),
+                    fg(format!("{name:<10}"), if here || mine { FOAM } else { MUTED }).bold(),
+                    fg(format!("{state:<12}"), color),
+                    fg(shown, if typing.is_some() && i == sel { FOAM } else { MUTED }),
                 ]);
-                if i == sel { l = l.bg(HULL); }
-                l
+                if i == sel { selected(l, w) } else { l }
             }).collect();
-            let text = match &own { Some(t) => format!("{t}▏"), None => tr().agent_own.to_string() };
-            let mut last = Line::from(vec![fg("   ", FOAM), fg(text, if own.is_some() { FOAM } else { MUTED })]);
-            if sel == all.len() { last = last.bg(HULL); }
-            lines.extend([Line::default(), last]);
-            if own.is_some() {
-                lines.push(Line::from(fg(format!("   {}", tr().agent_own_hint), MUTED)));
+            let add = match &typing { Some(t) if sel == all.len() => format!("{t}▏"), _ => tr().agent_add.to_string() };
+            let last = Line::from(vec![fg("   ", FOAM), fg(add, if sel == all.len() && typing.is_some() { FOAM } else { CURRENT })]);
+            lines.push(if sel == all.len() { selected(last, w) } else { last });
+            if typing.is_some() {
+                let hint = if sel == all.len() { tr().agent_add_hint } else { tr().agent_own_hint };
+                lines.extend([Line::default(), Line::from(fg(format!("   {hint}"), MUTED))]);
+            }
+            if !err.is_empty() {
+                lines.extend([Line::default(), Line::from(fg(format!("   {err}"), CORAL))]);
             }
             f.render_widget(Paragraph::new(lines), list);
-            f.render_widget(keys(&[("↑/↓", tr().k_move), ("⏎", tr().k_use), ("esc", tr().k_close)]), foot);
+            let k: &[(&str, &str)] = if typing.is_some() { &[("⏎", tr().k_use), ("esc", tr().k_back)] } else { &[("↑/↓", tr().k_move), ("⏎", tr().k_use), ("e", tr().k_edit), ("esc", tr().k_close)] };
+            f.render_widget(keys(k), foot);
         }).map_err(|e| e.to_string())?;
         let Some(k) = key()? else { continue };
-        if let Some(t) = &mut own {
+        if let Some(t) = &mut typing {
             match k {
-                KeyCode::Esc => own = None,
+                KeyCode::Esc => typing = None,
                 KeyCode::Backspace => { t.pop(); }
                 KeyCode::Char(c) => t.push(c),
                 KeyCode::Enter if !t.trim().is_empty() => {
-                    // its name is its first word; the task goes where it says, or last
-                    let cmd = if t.contains("{prompt}") { t.trim().to_string() } else { format!("{} {{prompt}}", t.trim()) };
-                    let name = cmd.split_whitespace().next().unwrap_or_default().to_string();
-                    work::agents_cmd(&["set", &name, &cmd])?;
-                    return work::agents_cmd(&["use", &name]);
+                    let text = t.trim().to_string();
+                    // a row keeps its name; a new one is named by its first word
+                    let name = if sel < all.len() { all[sel].0.clone() } else { text.split_whitespace().next().unwrap_or_default().to_string() };
+                    let cmd = if text.contains("{prompt}") { text } else { format!("{text} {{prompt}}") };
+                    match work::agents_cmd(&["set", &name, &cmd]).and_then(|_| work::agents_cmd(&["use", &name])) {
+                        Ok(()) => return Ok(()),
+                        Err(e) => err = e,
+                    }
                 }
                 _ => {}
             }
@@ -2194,11 +2207,23 @@ pub fn dialog_agent() -> Res<()> {
             KeyCode::Esc => return Ok(()),
             KeyCode::Down | KeyCode::Char('j') => sel = (sel + 1).min(all.len()),
             KeyCode::Up | KeyCode::Char('k') => sel = sel.saturating_sub(1),
-            KeyCode::Enter if sel == all.len() => own = Some(String::new()),
+            KeyCode::Char('e') if sel < all.len() => typing = Some(all[sel].1.clone()),
+            KeyCode::Enter if sel == all.len() => typing = Some(String::new()),
             KeyCode::Enter => return work::agents_cmd(&["use", &all[sel].0]),
             _ => {}
         }
+        all = work::agents();
     })
+}
+
+/// A row of a list in a dialog, as the selected one: the card of a popup is HULL already, so the selection is WAKE, to
+/// the edge.
+fn selected(l: Line<'_>, width: u16) -> Line<'_> {
+    let pad = " ".repeat((width as usize).saturating_sub(l.width()));
+    let mut l = l;
+    l.spans.push(pad.into());
+    l.spans.iter_mut().for_each(|s| s.style.bg = Some(WAKE));
+    l
 }
 
 /// The skill where other agents look, after a yes: it is the person's home.

@@ -31,6 +31,11 @@ pub fn installed(cmd: &str) -> bool {
     env::var_os("PATH").is_some_and(|p| env::split_paths(&p).any(|d| d.join(program).is_file()))
 }
 
+/// The names of the agents whose command the person wrote.
+pub fn own_agents() -> Vec<String> {
+    fs::read_to_string(state_dir().join("agents")).unwrap_or_default().lines().filter_map(|l| Some(l.split_once('\t')?.0.to_string())).collect()
+}
+
 /// The person chose one, or wrote their own.
 pub fn agent_chosen() -> bool {
     state_dir().join("agent").exists()
