@@ -185,16 +185,6 @@ fn walk(n: &Node, base: &str, depth: usize, f: &Files, flipped: &HashSet<String>
     }
 }
 
-/// Shows a file in a pager: its changes, or the whole file if it has none. For a popup.
-pub fn show(dir: &Path, path: &str) -> Res<()> {
-    const SCRIPT: &str = r#"cd "$1" || exit 1
-if ! git ls-files --error-unmatch -- "$2" >/dev/null 2>&1; then git -c color.ui=always diff --no-index -- /dev/null "$2"
-elif git diff --quiet HEAD -- "$2" 2>/dev/null; then cat -- "$2"
-else git -c color.ui=always diff HEAD -- "$2"; fi | LESS=-R less"#;
-    // LESS: an -F of the person would close it at once
-    Command::new("sh").args(["-c", SCRIPT, "sh"]).arg(dir).arg(path).status().map(|_| ()).map_err(|e| e.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

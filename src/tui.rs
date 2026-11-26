@@ -1939,7 +1939,7 @@ pub fn commands() -> Res<()> {
 
 // ---------- small dialogs: each one is an `orcux dialog ...` process inside a tmux popup ----------
 
-fn dialog(body: impl FnOnce(&mut ratatui::DefaultTerminal) -> Res<()>) -> Res<()> {
+pub(crate) fn dialog(body: impl FnOnce(&mut ratatui::DefaultTerminal) -> Res<()>) -> Res<()> {
     DRAWING.store(true, Ordering::Relaxed);
     let mut term = ratatui::init();
     let res = body(&mut term);
@@ -1947,7 +1947,7 @@ fn dialog(body: impl FnOnce(&mut ratatui::DefaultTerminal) -> Res<()>) -> Res<()
     res
 }
 
-fn draw_dialog(term: &mut ratatui::DefaultTerminal, lines: Vec<Line>, hint: &str) -> Res<()> {
+pub(crate) fn draw_dialog(term: &mut ratatui::DefaultTerminal, lines: Vec<Line>, hint: &str) -> Res<()> {
     term.draw(|f| {
         let area = f.area().inner(Margin::new(1, 0));
         let [body, foot] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
@@ -1958,7 +1958,7 @@ fn draw_dialog(term: &mut ratatui::DefaultTerminal, lines: Vec<Line>, hint: &str
 
 /// A dialog that asks yes or no, with one of them already chosen: Enter takes it, y and n answer, arrows change it,
 /// any other key is no.
-fn draw_choice(term: &mut ratatui::DefaultTerminal, lines: Vec<Line>, yes: bool, extra: &str) -> Res<()> {
+pub(crate) fn draw_choice(term: &mut ratatui::DefaultTerminal, lines: Vec<Line>, yes: bool, extra: &str) -> Res<()> {
     term.draw(|f| {
         let area = f.area().inner(Margin::new(1, 0));
         let [body, foot] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
@@ -1976,7 +1976,7 @@ fn draw_choice(term: &mut ratatui::DefaultTerminal, lines: Vec<Line>, yes: bool,
 }
 
 /// The answer to a dialog of `draw_choice`, if the key gives one.
-fn chosen(k: KeyCode, yes: &mut bool) -> Option<bool> {
+pub(crate) fn chosen(k: KeyCode, yes: &mut bool) -> Option<bool> {
     match k {
         KeyCode::Enter => Some(*yes),
         KeyCode::Char('y' | 's') => Some(true),
@@ -1989,7 +1989,7 @@ fn chosen(k: KeyCode, yes: &mut bool) -> Option<bool> {
 }
 
 /// Next key press, or None if something else happened (resize: redraw). Ctrl-C and Meta keys count as Esc.
-fn key() -> Res<Option<KeyCode>> {
+pub(crate) fn key() -> Res<Option<KeyCode>> {
     Ok(match event::read().map_err(|e| e.to_string())? {
         Event::Key(k) if k.kind == KeyEventKind::Press => {
             Some(if k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) { KeyCode::Esc } else { k.code })

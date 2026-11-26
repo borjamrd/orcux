@@ -8,7 +8,7 @@ Everything beyond the [README](../README.md). `orcux help` and `Opt+o` list ever
 | --- | --- |
 | `n` / `N` | new worktree / new one from the selected one |
 | `⏎` | open the selected worktree |
-| `f` | the files of the selected worktree and their changes |
+| `f` | the files of the selected worktree and their changes; Enter shows a diff, where `c` comments a line and the comments go to its agent on closing, without sending them |
 | `m` | merge the selected worktree and delete it |
 | `e` | rename the selected worktree |
 | `P` | push its branch and open its pull request |
