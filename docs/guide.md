@@ -109,7 +109,7 @@ English and Spanish, after your system or with `orcux lang`.
 ```sh
 cargo test                                                  # on tmux
 ORCUX_ENGINE=own cargo test                                 # on orcux's own engine
-cargo test --release --test perf -- --ignored --nocapture   # what 50 terminals cost
+cargo test --release --test perf -- --ignored --nocapture   # what 50 terminals cost: docs/speed.md
 ```
 
 Tests use servers of their own, never yours.

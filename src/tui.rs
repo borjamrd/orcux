@@ -428,7 +428,7 @@ impl FilesView {
         }
         let lines = vec![
             keys(&[("⏎", tr().k_diff), ("c", if self.only { tr().k_all_files } else { tr().k_only_changes })]),
-            keys(&[("esc", tr().k_back), ("?", tr().k_commands)]),
+            keys(&[("esc", tr().k_back), ("Opt+o", tr().k_commands)]),
         ];
         f.render_widget(Paragraph::new(lines), foot);
         at
@@ -790,7 +790,7 @@ impl App {
         if self.msg.is_empty() {
             let lines = vec![
                 keys(&[("n", tr().k_new), ("A", tr().k_add), ("d", tr().k_delete)]),
-                keys(&[("?", tr().k_commands), ("Opt+w", tr().k_switch)]),
+                keys(&[("Opt+o", tr().k_commands), ("Opt+w", tr().k_switch)]),
             ];
             f.render_widget(Paragraph::new(lines), foot);
         } else {
@@ -1247,7 +1247,7 @@ pub fn welcome() -> Res<()> {
                 lines.push(Line::from(vec![fg("R", FOAM), fg(format!(" {}", (tr().restore_offer)(lost)), MUTED)]));
                 lines.push(Line::default());
             }
-            lines.push(keys(&[("n", tr().k_new), ("A", tr().k_add), ("?", tr().k_commands)]));
+            lines.push(keys(&[("n", tr().k_new), ("A", tr().k_add), ("Opt+o", tr().k_commands)]));
             let [_, middle, _] = Layout::vertical([Constraint::Fill(1), Constraint::Length(lines.len() as u16), Constraint::Fill(1)]).areas(f.area());
             f.render_widget(Paragraph::new(lines).centered(), middle);
         });
