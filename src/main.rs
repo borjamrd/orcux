@@ -485,14 +485,36 @@ fn check_out(wt: &Wt, parent: Option<&Wt>) -> Res<()> {
             return Err((tr().branch_exists)(name));
         }
         let base = git(&parent.path(), &["rev-parse", "HEAD"])?;
-        git(repo, &["worktree", "add", "--no-track", "-b", name, p, &base])?;
+        add_worktree(repo, name, p, Some(&base))?;
     } else if exists {
-        git(repo, &["worktree", "add", p, name])?;
+        add_worktree(repo, name, p, None)?;
     } else {
         let base = if has("refs/remotes/origin/HEAD") { "origin/HEAD" } else { "HEAD" };
-        git(repo, &["worktree", "add", "--no-track", "-b", name, p, base])?;
+        add_worktree(repo, name, p, Some(base))?;
     }
     copy_includes(repo, &path)
+}
+
+/// `git worktree add`, with a new branch from `base` or with the branch that exists. Again if another worktree being
+/// made at the same moment broke it: git reads the folders of the others, and one half written fails it ("failed to
+/// read .git/worktrees/x/commondir"). By then git made the new branch: the next try takes it.
+fn add_worktree(repo: &Path, name: &str, path: &str, base: Option<&str>) -> Res<()> {
+    let mut tries = 0;
+    loop {
+        let made = tries > 0 && git(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")]).is_ok();
+        let r = match base {
+            Some(b) if !made => git(repo, &["worktree", "add", "--no-track", "-b", name, path, b]),
+            _ => git(repo, &["worktree", "add", path, name]),
+        };
+        match r {
+            Err(e) if tries < 5 && e.contains("worktrees/") && (e.contains("commondir") || e.contains("gitdir")) => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(100 * tries));
+                git(repo, &["worktree", "prune"]).ok();
+            }
+            r => return r.map(|_| ()),
+        }
+    }
 }
 
 /// Copies the local-only files listed in the main checkout's .worktreeinclude.

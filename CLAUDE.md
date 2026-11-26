@@ -63,6 +63,7 @@ Model:
 - A command through the connection can answer in several blocks (`if-shell`), so each one is followed by a marker. Commands with control characters, popups and those about the current client go as processes.
 - Several agents run orcux at once: state changes go through `change()` / `lock()`, and tmux changes that read and then act (`spawn`, `ensure_ui`, `show_tab`, `close_tab`) take `lock()` too. Never hold it while git works. A worktree is registered before git creates it, so its name and ports are taken. State files are replaced whole, and one that cannot be read is an error, not an empty list.
 - `swap-pane` gives a pane the window of another one, with the activity of that window: without remembering since when a pane is hidden, a working agent looked idle.
+- Several `git worktree add` at once in one repo: git reads the folders of the other worktrees, and one half written fails it ("failed to read .git/worktrees/x/commondir"). `add_worktree` tries again; by then git made the new branch, so the next try takes it instead of `-b`.
 - `rm` refuses a worktree that holds another one: git would delete it with everything inside.
 - A new terminal with something to run is marked `working <t> starting` (its `.orcux` setup) or `launched`, so that `wait` does not see "no agent" before the agent tells; they expire (30 min, 15 s).
 - `remove` checks everything that would stop git (changes, lock, submodules) before the teardown: a teardown may delete a database.
