@@ -59,7 +59,7 @@ pub fn connect(news: impl Fn(News) + Send + 'static) -> bool {
 
 fn open(news: impl Fn(News) + Send + 'static) -> bool {
     close();
-    let spawned = Command::new("tmux").args(["-u", "-C", "attach-session", "-t", UI, "-f", "ignore-size,no-output"])
+    let spawned = crate::mux::tmux_command().args(["-u", "-C", "attach-session", "-t", UI, "-f", "ignore-size,no-output"])
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn();
     let Ok(mut child) = spawned else { return false };
     let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else { return false };

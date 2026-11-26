@@ -7,7 +7,15 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
+/// The tests run on orcux's own engine instead of tmux.
+pub fn own() -> bool {
+    std::env::var("ORCUX_ENGINE").is_ok_and(|e| e == "own")
+}
+
 pub fn has_tmux() -> bool {
+    if own() {
+        return true;
+    }
     Command::new("tmux").arg("-V").output().is_ok_and(|o| o.status.success())
 }
 
@@ -28,10 +36,13 @@ impl Lab {
         }
         let real = String::from_utf8(Command::new("sh").args(["-c", "command -v tmux"]).output().unwrap().stdout).unwrap();
         assert!(!real.trim().is_empty(), "tmux is needed");
-        // counts every tmux process, and refuses to reach any other server
+        // counts every tmux process, and refuses to reach any other server. With ORCUX_ENGINE=own, "tmux" is orcux's
+        // own engine: the same tests, run on it
+        let engine = if own() { format!("{} tmux", env!("CARGO_BIN_EXE_orcux")) } else { real.trim().to_string() };
+        // "-L outer" plays the person's terminal: tmux itself, as Terminal.app would be
         let wrapper = format!(
-            "#!/bin/sh\ncase \"$TMUX\" in ''|*{0}/*) ;; *) exit 97;; esac\n[ \"$TMUX_TMPDIR\" = {0}/tmux ] || exit 97\necho \"$*\" >> {0}/log\nexec {1} \"$@\"\n",
-            dir.display(), real.trim()
+            "#!/bin/sh\ncase \"$TMUX\" in ''|*{0}/*) ;; *) exit 97;; esac\n[ \"$TMUX_TMPDIR\" = {0}/tmux ] || exit 97\necho \"$*\" >> {0}/log\ncase \" $* \" in *\" -L outer \"*) exec {2} \"$@\";; esac\nexec {1} \"$@\"\n",
+            dir.display(), engine, real.trim()
         );
         write_exe(&dir.join("bin/tmux"), &wrapper);
         write_exe(&dir.join("bin/gh"), "#!/bin/sh\nexit 1\n");
@@ -41,8 +52,8 @@ impl Lab {
     pub fn cmd(&self, program: &str) -> Command {
         let mut c = Command::new(program);
         let path = format!("{}:{}", self.dir.join("bin").display(), std::env::var("PATH").unwrap_or_default());
-        c.env("HOME", self.dir.join("home")).env("TMUX_TMPDIR", self.dir.join("tmux")).env("PATH", path).env("SHELL", "/bin/sh").env("LANG", "en_US.UTF-8");
-        for k in ["TMUX", "TMUX_PANE", "ORCUX_ID", "ORCUX_LANG", "LC_ALL", "GH_TOKEN"] {
+        c.env("HOME", self.dir.join("home")).env("TMUX_TMPDIR", self.dir.join("tmux")).env("ORCUX_LAUNCHD", "0").env("PATH", path).env("SHELL", "/bin/sh").env("LANG", "en_US.UTF-8");
+        for k in ["TMUX", "TMUX_PANE", "ORCUX_ID", "ORCUX_LANG", "LC_ALL", "GH_TOKEN", "ORCUX_MUX"] {
             c.env_remove(k);
         }
         c.current_dir(self.dir.join("repo"));
@@ -69,12 +80,21 @@ impl Lab {
     }
 }
 
-impl Drop for Lab {
-    fn drop(&mut self) {
+impl Lab {
+    /// Ends every server of the lab: tmux's, and the engine's.
+    pub fn kill_servers(&self) {
         for socket in fs::read_dir(self.dir.join("tmux")).into_iter().flatten().flatten().flat_map(|d| fs::read_dir(d.path()).into_iter().flatten().flatten()) {
             // by its path: no environment can send this anywhere else
-            Command::new("tmux").arg("-S").arg(socket.path()).arg("kill-server").env_remove("TMUX").output().ok();
+            let engine = socket.path().parent().and_then(|d| d.file_name()).is_some_and(|n| n.to_string_lossy().starts_with("orcux-"));
+            let mut c = if engine { let mut c = Command::new(env!("CARGO_BIN_EXE_orcux")); c.arg("tmux"); c } else { Command::new("tmux") };
+            c.arg("-S").arg(socket.path()).arg("kill-server").env_remove("TMUX").env_remove("ORCUX_MUX").output().ok();
         }
+    }
+}
+
+impl Drop for Lab {
+    fn drop(&mut self) {
+        self.kill_servers();
         // the shells write their history on their way out
         for _ in 0..20 {
             if fs::remove_dir_all(&self.dir).is_err() || !self.dir.exists() {

@@ -256,10 +256,7 @@ fn terminals_come_back() {
     assert_eq!(says(&any(&lab, &["restore", "--list"])).trim(), "");
 
     // tmux ends, with everything in it
-    let socket = fs::read_dir(lab.dir.join("tmux")).unwrap().flatten().next().unwrap().path();
-    for s in ["default", "outer"] {
-        Command::new("tmux").arg("-S").arg(socket.join(s)).arg("kill-server").env_remove("TMUX").output().ok();
-    }
+    lab.kill_servers();
     sleep(Duration::from_secs(1));
     ui("the interface again");
     until("it knows what was lost", || says(&any(&lab, &["restore", "--list"])).lines().count() == 3);
