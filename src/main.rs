@@ -174,7 +174,13 @@ pub fn viewer() -> Option<(String, u32, u32)> {
         let [control, at, name, w, h] = l.split('\t').collect::<Vec<_>>()[..] else { return None };
         (control != "1").then(|| Some((at.parse::<u64>().ok()?, name.to_string(), w.parse().ok()?, h.parse().ok()?)))?
     });
-    people.max_by_key(|c| c.0).map(|(_, name, w, h)| (name, w, h))
+    // `orcux window` is a control client of its own
+    people.max_by_key(|c| c.0).map(|(_, name, w, h)| (name, w, h)).or_else(window::client)
+}
+
+/// Whether a person is attached to the session through tmux (not `orcux window`, not a connection of orcux).
+fn people_attached() -> bool {
+    tmux(&["list-clients", "-t", UI, "-F", "#{client_control_mode}"]).is_ok_and(|s| s.lines().any(|l| l != "1"))
 }
 
 pub fn detach() -> Res<()> {
@@ -981,6 +987,9 @@ pub fn show_tab(w: &Wt, tab: Option<u32>) -> Res<()> {
 
 /// Runs `orcux <args>` in a tmux popup centered over the whole UI (the sidebar alone is too narrow). Blocks until closed.
 pub fn popup(title: &str, want: (u32, u32), args: &[&str]) -> Res<()> {
+    if window::client().is_some() && !people_attached() {
+        return window::popup(title, want, args);
+    }
     let exe = env::current_exe().map_err(|e| e.to_string())?;
     // tmux rejects a popup larger than the client instead of clamping it
     let (client, w, h) = viewer().ok_or(tr().no_pane)?;
@@ -1364,7 +1373,7 @@ fn cli(a: &[&str]) -> Res<()> {
             let (w, n) = target(q)?;
             close_tab(&w, n.ok_or(tr().which_tab)?)
         }
-        ["window", q] => window::run(q),
+        ["window"] => window::run(),
         ["tab", "click", range] => click_tab(range),
         ["tab", "next"] => step_tab(true),
         ["tab", "prev"] => step_tab(false),

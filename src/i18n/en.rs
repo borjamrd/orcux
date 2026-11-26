@@ -42,6 +42,7 @@ pub static EN: Text = Text {
         ]),
         ("Terminal", &[
             ("orcux", "open the interface (sidebar + terminal)"),
+            ("orcux window", "the interface drawn by orcux itself (preview)"),
             ("orcux new <name> [--repo P] [--cmd C]", "create worktree, ports and terminal"),
             ("orcux rm <wt> [--force]", "delete the worktree (keeps the branch)"),
             ("orcux merge <wt> [--into B] [--check]", "merge its branch and delete it (nothing is pushed)"),
@@ -99,7 +100,6 @@ pub static EN: Text = Text {
     k_hide: "hide",
     k_refresh: "refresh",
     k_back: "back",
-    window_visible: "that tab is shown in the other interface: show another one there",
     k_yes: "yes",
     k_no: "no",
     hint_choose: "←→ choose  ⏎ accept",
@@ -118,6 +118,7 @@ pub static EN: Text = Text {
     title_rm: "Delete worktree",
     title_pr: "Create worktree",
     title_close: "Close tab",
+    title_switch: "Worktrees",
     hint_new: "⏎ create  esc cancel",
     hint_add: "⏎ add  tab complete  esc cancel",
     hint_pr: "⏎ create and open  esc cancel",

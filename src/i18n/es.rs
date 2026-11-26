@@ -42,6 +42,7 @@ pub static ES: Text = Text {
         ]),
         ("Terminal", &[
             ("orcux", "abrir la interfaz (sidebar + terminal)"),
+            ("orcux window", "la interfaz dibujada por el propio orcux (avance)"),
             ("orcux new <nombre> [--repo P] [--cmd C]", "crear worktree, puertos y terminal"),
             ("orcux rm <wt> [--force]", "borrar el worktree (conserva la rama)"),
             ("orcux merge <wt> [--into B] [--check]", "fusionar su rama y borrarlo (no sube nada)"),
@@ -99,7 +100,6 @@ pub static ES: Text = Text {
     k_hide: "ocultar",
     k_refresh: "actualizar",
     k_back: "volver",
-    window_visible: "esa pestaña se ve en la otra interfaz: muestra otra allí",
     k_yes: "sí",
     k_no: "no",
     hint_choose: "←→ elegir  ⏎ aceptar",
@@ -118,6 +118,7 @@ pub static ES: Text = Text {
     title_rm: "Borrar worktree",
     title_pr: "Crear worktree",
     title_close: "Cerrar pestaña",
+    title_switch: "Worktrees",
     hint_new: "⏎ crear  esc cancelar",
     hint_add: "⏎ añadir  tab completar  esc cancelar",
     hint_pr: "⏎ crear y abrir  esc cancelar",
