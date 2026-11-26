@@ -120,6 +120,7 @@ pub static EN: Text = Text {
     title_pr: "Create worktree",
     title_close: "Close tab",
     title_switch: "Worktrees",
+    window_inside: "orcux window opens in a terminal of its own, not inside orcux",
     ui_now: |now, all| format!("interface: {now} ({all})"),
     hint_new: "⏎ create  esc cancel",
     hint_add: "⏎ add  tab complete  esc cancel",

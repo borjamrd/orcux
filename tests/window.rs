@@ -87,6 +87,18 @@ fn the_window_is_drawn_by_orcux() {
     }
     until("copied", || fs::read_to_string(&copied).is_ok_and(|t| t == "hi-window"));
 
+    // a paste is text for the terminal, whatever it holds: a line of it is never a command for tmux
+    let pwned = lab.dir.join("pwned");
+    keys(&lab, &format!("\x1b[200~echo pasted\nrun-shell 'touch {}'\n\x1b[201~", pwned.display()));
+    until("pasted", || lab.tmux(&["capture-pane", "-p", "-t", &term]).contains("pasted"));
+    sleep(Duration::from_millis(500));
+    assert!(!pwned.exists(), "a pasted line ran as a tmux command");
+    keys(&lab, "\x03");
+
+    // inside a pane of orcux it would draw itself without end: it says so instead
+    keys(&lab, &format!("{ORCUX} window\r"));
+    until("refused inside orcux", || lab.tmux(&["capture-pane", "-p", "-t", &term]).contains("a terminal of its own"));
+
     // the wheel goes back in the history
     keys(&lab, "seq 1 150\r");
     until("printed", || lab.tmux(&["capture-pane", "-p", "-t", &term]).contains("150"));

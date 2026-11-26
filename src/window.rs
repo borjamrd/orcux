@@ -53,7 +53,8 @@ impl Link {
     /// Several commands in one line: tmux runs them one after the other, with nothing read from the terminals in
     /// between. Each one still has its own reply.
     fn send_all(&mut self, cmds: &[&[&str]]) -> Res<()> {
-        let quote = |a: &&str| format!("'{}'", a.replace('\'', "'\"'\"'"));
+        // a line ends a command, an empty one detaches: nothing here may hold one (pasted text goes through a file)
+        let quote = |a: &&str| format!("'{}'", a.replace(['\n', '\r'], " ").replace('\'', "'\"'\"'"));
         let line = cmds.iter().map(|c| c.iter().map(quote).collect::<Vec<_>>().join(" ")).collect::<Vec<_>>().join(" ; ");
         debug(&format!("> {line}"));
         writeln!(self.stdin, "{line}").and_then(|_| self.stdin.flush()).map_err(|e| e.to_string())
@@ -189,19 +190,28 @@ fn chord(k: &KeyEvent) -> Option<Chord> {
     })
 }
 
-/// A mouse event as the program in a pane reads it (SGR), at that column and row of the pane, both from 0.
-fn sgr(m: &MouseEvent, col: u16, row: u16) -> Option<Vec<u8>> {
+/// A mouse event as the program in a pane asked for it, at that column and row of the pane, both from 0: only the
+/// events of its mode, in SGR or in the old encoding of single bytes.
+fn mouse_bytes(m: &MouseEvent, col: u16, row: u16, mode: vt100::MouseProtocolMode, encoding: vt100::MouseProtocolEncoding) -> Option<Vec<u8>> {
+    use vt100::MouseProtocolMode as M;
     let mods = |b: u8| b + if m.modifiers.contains(KeyModifiers::SHIFT) { 4 } else { 0 } + if m.modifiers.contains(KeyModifiers::ALT) { 8 } else { 0 } + if m.modifiers.contains(KeyModifiers::CONTROL) { 16 } else { 0 };
     let button = |b: MouseButton| match b { MouseButton::Left => 0, MouseButton::Middle => 1, MouseButton::Right => 2 };
-    let (code, end) = match m.kind {
-        MouseEventKind::Down(b) => (button(b), 'M'),
-        MouseEventKind::Up(b) => (button(b), 'm'),
-        MouseEventKind::Drag(b) => (32 + button(b), 'M'),
-        MouseEventKind::ScrollUp => (64, 'M'),
-        MouseEventKind::ScrollDown => (65, 'M'),
+    let (code, release) = match m.kind {
+        MouseEventKind::Down(b) => (button(b), false),
+        MouseEventKind::ScrollUp => (64, false),
+        MouseEventKind::ScrollDown => (65, false),
+        MouseEventKind::Up(b) if mode != M::Press => (button(b), true),
+        MouseEventKind::Drag(b) if matches!(mode, M::ButtonMotion | M::AnyMotion) => (32 + button(b), false),
+        MouseEventKind::Moved if mode == M::AnyMotion => (35, false),
         _ => return None,
     };
-    Some(format!("\x1b[<{};{};{}{end}", mods(code), col + 1, row + 1).into_bytes())
+    if encoding == vt100::MouseProtocolEncoding::Sgr {
+        return Some(format!("\x1b[<{};{};{}{}", mods(code), col + 1, row + 1, if release { 'm' } else { 'M' }).into_bytes());
+    }
+    // one byte each, from 32: a release has no button of its own, and far columns do not fit
+    let code = if release { 3 } else { code };
+    let (x, y) = (u8::try_from(col + 33).ok()?, u8::try_from(row + 33).ok()?);
+    Some(vec![0x1b, b'[', b'M', 32 + mods(code), x, y])
 }
 
 fn color(c: vt100::Color, default: Color) -> Color {
@@ -234,22 +244,55 @@ fn paint(screen: &vt100::Screen, buf: &mut Buffer, area: Rect, ground: (Color, C
     }
 }
 
+/// What seeded() needs besides the screen, in this order.
+const STATE: &str = "#{cursor_x} #{cursor_y} #{cursor_flag} #{alternate_on} #{mouse_standard_flag} #{mouse_button_flag} #{mouse_any_flag} \
+    #{mouse_sgr_flag} #{scroll_region_upper} #{scroll_region_lower} #{origin_flag} #{insert_flag} #{wrap_flag} #{history_size}";
+
 /// What a pane shows now, as tmux has it: its screen (the reply to capture-pane) and its cursor and screen (the reply
 /// to display-message: x, y, whether the cursor is shown, whether the alternate screen is on).
 fn seeded(rows: u16, cols: u16, lines: &[Vec<u8>], state: &str) -> vt100::Parser {
     let nz = |n: u16| NonZeroU16::new(n.max(1)).unwrap_or(NonZeroU16::MIN);
     let mut p = vt100::Parser::new(nz(rows), nz(cols), 0);
-    let f: Vec<u16> = state.split(' ').filter_map(|x| x.parse().ok()).collect();
-    let (x, y, visible, alternate) = (f.first().copied().unwrap_or(0), f.get(1).copied().unwrap_or(0), f.get(2) != Some(&0), f.get(3) == Some(&1));
-    if alternate {
+    let f: Vec<u16> = state.split(' ').map(|x| x.parse().unwrap_or(0)).collect();
+    let at = |i: usize, default: u16| f.get(i).copied().unwrap_or(default);
+    let on = |i: usize| at(i, 0) == 1;
+    let (x, y) = (at(0, 0), at(1, 0));
+    if on(3) {
         p.process(b"\x1b[?1049h");
     }
     for (i, l) in lines.iter().take(rows as usize).enumerate() {
         p.process(format!("\x1b[{};1H\x1b[0m", i + 1).as_bytes());
         p.process(l);
     }
-    p.process(format!("\x1b[0m\x1b[{};{}H", y + 1, x + 1).as_bytes());
-    if !visible {
+    p.process(b"\x1b[0m");
+    // the modes that the program set and that change what comes next: the mouse it reads, its scroll region,
+    // origin, insert and wrap
+    for (i, mode) in [(6, "1003"), (5, "1002"), (4, "1000")] {
+        if on(i) {
+            p.process(format!("\x1b[?{mode}h").as_bytes());
+            break;
+        }
+    }
+    if on(7) {
+        p.process(b"\x1b[?1006h");
+    }
+    let (upper, lower) = (at(8, 0), at(9, rows.saturating_sub(1)));
+    if (upper, lower) != (0, rows.saturating_sub(1)) && upper < lower {
+        p.process(format!("\x1b[{};{}r", upper + 1, lower + 1).as_bytes());
+    }
+    let origin = on(10);
+    if origin {
+        p.process(b"\x1b[?6h");
+    }
+    if on(11) {
+        p.process(b"\x1b[4h");
+    }
+    if f.len() > 12 && !on(12) {
+        p.process(b"\x1b[?7l");
+    }
+    let y = if origin { y.saturating_sub(upper) } else { y };
+    p.process(format!("\x1b[{};{}H", y + 1, x + 1).as_bytes());
+    if f.len() > 2 && !on(2) {
         p.process(b"\x1b[?25l");
     }
     p
@@ -337,6 +380,8 @@ struct Screen {
     back: u16,
     /// seeded, and nothing printed since: see after_seed
     fresh: bool,
+    /// lines of tmux's history, as of the last seed: how far back the wheel goes
+    lines: u16,
     history: Option<vt100::Parser>,
 }
 
@@ -363,6 +408,17 @@ impl Selection {
         let ((r0, c0), (r1, c1)) = self.ordered();
         (r0, c0) <= (r, c) && (r, c) <= (r1, c1)
     }
+}
+
+/// Pasted text in a file that only this person can read, for tmux's load-buffer.
+fn paste_file(text: &str) -> Option<std::path::PathBuf> {
+    use std::os::unix::fs::OpenOptionsExt;
+    static COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = env::temp_dir().join(format!("orcux-paste-{}-{n}", std::process::id()));
+    let mut f = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).ok()?;
+    f.write_all(text.as_bytes()).ok()?;
+    Some(path)
 }
 
 /// The text goes to the clipboard of the computer: its own program if there is one, else the terminal (OSC 52).
@@ -398,6 +454,11 @@ enum Spot {
 }
 
 pub fn run() -> Res<()> {
+    // in a pane of orcux it would draw itself, and resize its own window, without end
+    // (TMUX_PANE means something only with TMUX: it is a pane of that server)
+    if env::var("TMUX").is_ok() && let Ok(me) = env::var("TMUX_PANE") && let Ok(s) = tmux(&["display-message", "-p", "-t", &me, "#{session_name}"]) && (s == UI_NAME || s == BG) {
+        return Err(tr().window_inside.into());
+    }
     ensure_ui()?;
     let (tx, rx) = mpsc::channel();
     let mut child = Command::new("tmux").args(["-u", "-C", "attach-session", "-t", UI, "-f", "pause-after=2"])
@@ -432,10 +493,19 @@ pub fn run() -> Res<()> {
         hook(info);
     }));
     execute!(stdout(), EnableBracketedPaste, EnableMouseCapture).ok();
-    let res = Window::new().run(&mut term, &mut link, &rx);
+    let mut window = Window::new();
+    let res = window.run(&mut term, &mut link, &rx);
     execute!(stdout(), DisableMouseCapture, DisableBracketedPaste).ok();
     ratatui::restore();
-    tmux(&["set-option", "-g", "-u", CLIENT]).ok();
+    // its popups go with it; the option only if it is still ours (another window may have come since)
+    for l in tmux(&["list-windows", "-t", UI, "-F", "#{window_id} #{@orcux_popup}"]).unwrap_or_default().lines() {
+        if let Some((id, title)) = l.split_once(' ') && !title.is_empty() {
+            tmux(&["kill-window", "-t", id]).ok();
+        }
+    }
+    if !window.me.is_empty() && tmux(&["show-option", "-gqv", CLIENT]).is_ok_and(|v| v == window.me) {
+        tmux(&["set-option", "-g", "-u", CLIENT]).ok();
+    }
     res
 }
 
@@ -451,16 +521,20 @@ struct Window {
     spots: Vec<(u16, u16, Spot)>,
     dirty: bool,
     selection: Option<Selection>,
+    /// this client's name, once tmux told it
+    me: String,
+    /// the tabs of the shown worktree: asked when the layout or the tab bar change, not at every frame
+    tabs: Vec<Pane>,
 }
 
 impl Window {
     fn new() -> Window {
-        Window { screens: HashMap::new(), places: vec![], waiting: VecDeque::new(), capture: vec![], top: 1, size: (0, 0), spots: vec![], dirty: true, selection: None }
+        Window { screens: HashMap::new(), places: vec![], waiting: VecDeque::new(), capture: vec![], top: 1, size: (0, 0), spots: vec![], dirty: true, selection: None, me: String::new(), tabs: vec![] }
     }
 
     /// The screen of that pane and its cursor at the same moment: one line, so tmux reads nothing in between.
     fn resync(&mut self, link: &mut Link, pane: &str) -> Res<()> {
-        link.send_all(&[&["capture-pane", "-p", "-e", "-N", "-t", pane], &["display-message", "-p", "-t", pane, "#{cursor_x} #{cursor_y} #{cursor_flag} #{alternate_on}"]])?;
+        link.send_all(&[&["capture-pane", "-p", "-e", "-N", "-t", pane], &["display-message", "-p", "-t", pane, STATE]])?;
         self.waiting.extend([("capture", pane.to_string()), ("state", pane.to_string())]);
         Ok(())
     }
@@ -468,12 +542,14 @@ impl Window {
     /// Where the panes are now; the screens of new or resized ones are asked again.
     fn relayout(&mut self, link: &mut Link) -> Res<()> {
         self.places = places();
+        let shown = self.places.iter().find(|p| p.shown && p.popup.is_none() && p.mark != "__sidebar" && p.mark != "__prs").map(|p| p.mark.clone());
+        self.tabs = shown.filter(|m| !m.is_empty()).map(|m| tabs(&m)).unwrap_or_default();
         let live: Vec<(String, (u16, u16))> = self.places.iter().map(|p| (p.pane.clone(), (p.at.3, p.at.2))).collect();
         self.screens.retain(|id, _| live.iter().any(|l| &l.0 == id));
         for (id, size) in live {
             let stale = self.screens.get(&id).is_none_or(|s| s.size != size);
             if stale {
-                self.screens.insert(id.clone(), Screen { parser: None, size, syncing: None, back: 0, history: None, fresh: false });
+                self.screens.insert(id.clone(), Screen { parser: None, size, syncing: None, back: 0, history: None, fresh: false, lines: 0 });
                 self.resync(link, &id)?;
             }
         }
@@ -498,7 +574,7 @@ impl Window {
         Ok(())
     }
 
-    fn run(mut self, term: &mut ratatui::DefaultTerminal, link: &mut Link, rx: &mpsc::Receiver<Msg>) -> Res<()> {
+    fn run(&mut self, term: &mut ratatui::DefaultTerminal, link: &mut Link, rx: &mpsc::Receiver<Msg>) -> Res<()> {
         link.send(&["display-message", "-p", "#{client_name}"])?;
         self.waiting.push_back(("me", String::new()));
         link.send(&["refresh-client", "-B", "orcux-window::#{@orcux_bar}#{session_windows}"])?;
@@ -542,8 +618,20 @@ impl Window {
                         let me = lines.first().map(|l| String::from_utf8_lossy(l).into_owned()).unwrap_or_default();
                         // the person is this client now, for popups and for "somebody is looking"
                         tmux(&["set-option", "-g", CLIENT, &me]).ok();
+                        self.me = me;
                     }
                     Some(("capture", _)) => self.capture = if ok { lines } else { vec![] },
+                    Some(("unlink", path)) => { fs::remove_file(path).ok(); }
+                    Some(("hsize", id)) => {
+                        if let Some(s) = self.screens.get_mut(&id) {
+                            s.lines = lines.first().and_then(|l| String::from_utf8_lossy(l).trim().parse().ok()).unwrap_or(s.lines);
+                            s.back = s.back.min(s.lines);
+                            if s.back == 0 {
+                                s.history = None;
+                            }
+                            self.dirty = true;
+                        }
+                    }
                     Some(("history", id)) => {
                         if let Some(s) = self.screens.get_mut(&id) && s.back > 0 {
                             // fewer lines than asked: the top of the history
@@ -557,6 +645,7 @@ impl Window {
                             let state = lines.first().map(|l| String::from_utf8_lossy(l).into_owned()).unwrap_or_default();
                             s.parser = Some(seeded(s.size.0, s.size.1, &self.capture, &state));
                             s.fresh = true;
+                            s.lines = state.split(' ').nth(13).and_then(|n| n.parse().ok()).unwrap_or(u16::MAX);
                             self.dirty = true;
                         }
                     }
@@ -576,10 +665,12 @@ impl Window {
                 Msg::Input(Event::Key(k)) if k.kind != KeyEventKind::Release => self.key(link, &k)?,
                 Msg::Input(Event::Mouse(m)) => self.mouse(link, &m)?,
                 Msg::Input(Event::Paste(text)) => {
-                    if let Some(p) = self.target().map(|p| p.pane.clone()) {
+                    if let Some(p) = self.target().map(|p| p.pane.clone()) && let Some(file) = paste_file(&text) {
+                        // through a file of this person only: text in a command could end it and start another.
                         // tmux wraps it as the program asked (bracketed paste)
-                        link.send_all(&[&["set-buffer", "-b", "orcux-paste", &text], &["paste-buffer", "-p", "-d", "-b", "orcux-paste", "-t", &p]])?;
-                        self.waiting.extend([("", String::new()), ("", String::new())]);
+                        let path = file.to_string_lossy().to_string();
+                        link.send_all(&[&["load-buffer", "-b", "orcux-paste", &path], &["paste-buffer", "-p", "-d", "-b", "orcux-paste", "-t", &p]])?;
+                        self.waiting.extend([("unlink", path), ("", String::new())]);
                     }
                 }
                 Msg::Input(_) => {}
@@ -605,7 +696,9 @@ impl Window {
             return Ok(());
         }
         // a key goes back to the live screen, as in tmux
-        self.selection = None;
+        if self.selection.take().is_some() {
+            self.dirty = true;
+        }
         if let Some(s) = self.screens.get_mut(&target.pane) && s.back > 0 {
             (s.back, s.history, self.dirty) = (0, None, true);
         }
@@ -630,7 +723,24 @@ impl Window {
 
     fn mouse(&mut self, link: &mut Link, m: &MouseEvent) -> Res<()> {
         let (col, row) = (m.column, m.row);
-        debug(&format!("mouse {:?} {col} {row}", m.kind));
+        // a selection follows the button wherever it goes, and ends where it is let go
+        if matches!(m.kind, MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left))
+            && let Some(owner) = self.selection.as_ref().and_then(|s| self.places.iter().find(|p| p.pane == s.pane)).cloned()
+        {
+            let r = self.rect(&owner);
+            let to = (row.clamp(r.y, r.y + r.height.saturating_sub(1)) - r.y, col.clamp(r.x, r.x + r.width.saturating_sub(1)) - r.x);
+            if let Some(s) = &mut self.selection {
+                s.to = to;
+            }
+            if matches!(m.kind, MouseEventKind::Up(_)) && let Some(s) = self.selection.take() && s.from != s.to
+                && let Some(scr) = self.screens.get(&s.pane).and_then(Screen::shown)
+            {
+                let ((r0, c0), (r1, c1)) = s.ordered();
+                copy(&scr.screen().contents_between(r0, c0, r1, c1 + 1));
+            }
+            self.dirty = true;
+            return Ok(());
+        }
         if row == 0 && matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
             let spot = self.spots.iter().find(|s| (s.0..s.1).contains(&col)).map(|s| match s.2 { Spot::Tab(n) => Some(n), Spot::NewTab => None });
             if let Some(spot) = spot {
@@ -657,28 +767,14 @@ impl Window {
             self.waiting.push_back(("", String::new()));
         }
         let (pc, pr) = (col - r.x, row - r.y);
-        // a program that reads the mouse gets it; with Shift, the mouse is ours (to select), as in most terminals
-        let ours = !p.mouse || m.modifiers.contains(KeyModifiers::SHIFT);
-        if ours {
+        // what the program in the pane asked for, as its own screen says now
+        let modes = self.screens.get(&p.pane).and_then(|s| s.parser.as_ref()).map(|s| (s.screen().mouse_protocol_mode(), s.screen().mouse_protocol_encoding()));
+        let wants = modes.is_some_and(|m| m.0 != vt100::MouseProtocolMode::None);
+        // with Shift, the mouse is ours (to select), as in most terminals
+        if !wants || m.modifiers.contains(KeyModifiers::SHIFT) {
             match m.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
                     self.selection = Some(Selection { pane: p.pane.clone(), from: (pr, pc), to: (pr, pc) });
-                    self.dirty = true;
-                }
-                MouseEventKind::Drag(MouseButton::Left) => {
-                    if let Some(s) = &mut self.selection && s.pane == p.pane {
-                        s.to = (pr.min(r.height.saturating_sub(1)), pc.min(r.width.saturating_sub(1)));
-                        self.dirty = true;
-                    }
-                }
-                MouseEventKind::Up(MouseButton::Left) => {
-                    if let Some(s) = &mut self.selection && s.pane == p.pane {
-                        s.to = (pr, pc); // where the button is let go
-                    }
-                    if let Some(s) = self.selection.take() && s.from != s.to && let Some(scr) = self.screens.get(&s.pane).and_then(Screen::shown) {
-                        let ((r0, c0), (r1, c1)) = s.ordered();
-                        copy(&scr.screen().contents_between(r0, c0, r1, c1 + 1));
-                    }
                     self.dirty = true;
                 }
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => self.scroll(link, p, matches!(m.kind, MouseEventKind::ScrollUp))?,
@@ -686,7 +782,7 @@ impl Window {
             }
             return Ok(());
         }
-        if let Some(bytes) = sgr(m, pc, pr) {
+        if let Some((mode, encoding)) = modes && let Some(bytes) = mouse_bytes(m, pc, pr, mode, encoding) {
             let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
             let mut args = vec!["send-keys", "-H", "-t", &p.pane];
             args.extend(hex.iter().map(String::as_str));
@@ -714,8 +810,9 @@ impl Window {
             return Ok(());
         }
         let (h, back) = (i32::from(s.size.0), i32::from(s.back));
-        link.send(&["capture-pane", "-p", "-e", "-N", "-S", &(-back).to_string(), "-E", &(h - 1 - back).to_string(), "-t", &p.pane])?;
-        self.waiting.push_back(("history", p.pane.clone()));
+        // how much history there is now, with the lines: the wheel stops at its top
+        link.send_all(&[&["display-message", "-p", "-t", &p.pane, "#{history_size}"], &["capture-pane", "-p", "-e", "-N", "-S", &(-back).to_string(), "-E", &(h - 1 - back).to_string(), "-t", &p.pane]])?;
+        self.waiting.extend([("hsize", p.pane.clone()), ("history", p.pane.clone())]);
         Ok(())
     }
 
@@ -776,7 +873,7 @@ impl Window {
         self.spots.clear();
         if let Some(t) = terminal && !t.mark.is_empty() {
             let mut x = t.at.0 + 1;
-            for p in tabs(&t.mark) {
+            for p in &self.tabs {
                 let name = format!(" {} {} ", p.tab, tui::program(&p.cmd));
                 let w = Span::raw(&name).width() as u16;
                 // no room left before the corner: say that there are more
@@ -857,14 +954,20 @@ pub fn popup(title: &str, (w, h): (u32, u32), args: &[&str]) -> Res<()> {
     let (cw, ch) = tmux(&["display-message", "-p", "-t", &main, "#{window_width} #{window_height}"]).ok()
         .and_then(|s| { let (a, b) = s.split_once(' ')?; Some((a.parse::<u32>().ok()?, b.parse::<u32>().ok()?)) }).unwrap_or((80, 24));
     let size = ((w - 2).min(cw.saturating_sub(6)), (h - 2).min(ch.saturating_sub(2)));
-    for (k, v) in [("window-size", "manual".to_string()), ("@orcux_popup", title.to_string())] {
+    for (k, v) in [("window-size", "manual".to_string()), ("@orcux_popup", title.to_string()), ("remain-on-exit", "off".to_string())] {
         tmux(&["set-option", "-w", "-t", window, k, &v]).ok();
     }
     tmux(&["set-option", "-p", "-t", pane, "@orcux", "__popup"]).ok();
     tmux(&["resize-window", "-t", window, "-x", &size.0.to_string(), "-y", &size.1.to_string()]).ok();
     // gone with its program. Looked for in the list: asked by its id, a pane that is gone may be answered for by another
-    while tmux(&["list-panes", "-t", window, "-F", "#{pane_id}"]).is_ok_and(|l| l.lines().any(|p| p == pane)) {
-        std::thread::sleep(Duration::from_millis(150));
+    let alive = format!("{pane} 0");
+    while tmux(&["list-panes", "-t", window, "-F", "#{pane_id} #{pane_dead}"]).is_ok_and(|l| l.lines().any(|p| p == alive)) {
+        // nobody to answer it any more: it would wait for ever, and whoever opened it with it
+        if client().is_none() {
+            tmux(&["kill-window", "-t", window]).ok();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
     }
     Ok(())
 }
@@ -902,10 +1005,19 @@ mod tests {
         assert_eq!(c(KeyCode::Char('∑'), KeyModifiers::NONE), Some(Chord::Switch));
         assert_eq!(c(KeyCode::Char('œ'), KeyModifiers::NONE), Some(Chord::CloseTab));
         assert_eq!(c(KeyCode::Char('w'), KeyModifiers::NONE), None);
+        use vt100::{MouseProtocolEncoding as En, MouseProtocolMode as Mo};
         let m = MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: 9, row: 2, modifiers: KeyModifiers::NONE };
-        assert_eq!(sgr(&m, 3, 1), Some(b"\x1b[<0;4;2M".to_vec()));
-        let up = MouseEvent { kind: MouseEventKind::ScrollUp, ..m };
-        assert_eq!(sgr(&up, 0, 0), Some(b"\x1b[<64;1;1M".to_vec()));
+        assert_eq!(mouse_bytes(&m, 3, 1, Mo::PressRelease, En::Sgr), Some(b"\x1b[<0;4;2M".to_vec()));
+        assert_eq!(mouse_bytes(&m, 3, 1, Mo::Press, En::Default), Some(vec![0x1b, b'[', b'M', 32, 36, 34]));
+        let up = MouseEvent { kind: MouseEventKind::Up(MouseButton::Left), ..m };
+        assert_eq!(mouse_bytes(&up, 0, 0, Mo::PressRelease, En::Sgr), Some(b"\x1b[<0;1;1m".to_vec()));
+        assert_eq!(mouse_bytes(&up, 0, 0, Mo::PressRelease, En::Default), Some(vec![0x1b, b'[', b'M', 35, 33, 33]));
+        assert_eq!(mouse_bytes(&up, 0, 0, Mo::Press, En::Sgr), None); // only presses asked for
+        let drag = MouseEvent { kind: MouseEventKind::Drag(MouseButton::Left), ..m };
+        assert_eq!(mouse_bytes(&drag, 0, 0, Mo::PressRelease, En::Sgr), None);
+        assert_eq!(mouse_bytes(&drag, 0, 0, Mo::ButtonMotion, En::Sgr), Some(b"\x1b[<32;1;1M".to_vec()));
+        let wheel = MouseEvent { kind: MouseEventKind::ScrollUp, ..m };
+        assert_eq!(mouse_bytes(&wheel, 0, 0, Mo::Press, En::Sgr), Some(b"\x1b[<64;1;1M".to_vec()));
     }
 
     #[test]
@@ -935,6 +1047,8 @@ mod tests {
         assert_eq!(sync_state(b"\x1b[?2026hxx\x1b[?2026l"), Some(false));
         assert_eq!(sync_state(b"\x1b[?2026l..\x1b[?2026h"), Some(true));
         assert!(leaves_alternate(b"bye\x1b[?1049l"));
+        let m = seeded(5, 10, &[], "0 0 1 0 1 0 0 1 1 3 0 0 1 120");
+        assert_eq!((m.screen().mouse_protocol_mode(), m.screen().mouse_protocol_encoding()), (vt100::MouseProtocolMode::PressRelease, vt100::MouseProtocolEncoding::Sgr));
         let p = seeded(3, 10, &[b"\x1b[31mred".to_vec(), b"two".to_vec()], "4 1 1 0");
         assert_eq!(p.screen().contents(), "red\ntwo");
         assert_eq!(p.screen().cursor_position(), (1, 4));

@@ -170,17 +170,13 @@ pub fn tmux(args: &[&str]) -> Res<String> {
 pub fn viewer() -> Option<(String, u32, u32)> {
     let f = "#{client_control_mode}\t#{client_activity}\t#{client_name}\t#{client_width}\t#{client_height}";
     let all = tmux(&["list-clients", "-t", UI, "-F", f]).ok()?;
+    // `orcux window` is a control client of its own; with a terminal attached too, the last one used is the person's
+    let window = tmux(&["show-option", "-gqv", window::CLIENT]).unwrap_or_default();
     let people = all.lines().filter_map(|l| {
         let [control, at, name, w, h] = l.split('\t').collect::<Vec<_>>()[..] else { return None };
-        (control != "1").then(|| Some((at.parse::<u64>().ok()?, name.to_string(), w.parse().ok()?, h.parse().ok()?)))?
+        (control != "1" || (!window.is_empty() && name == window)).then(|| (at.parse::<u64>().unwrap_or(0), name.to_string(), w.parse().unwrap_or(0), h.parse().unwrap_or(0)))
     });
-    // `orcux window` is a control client of its own
-    people.max_by_key(|c| c.0).map(|(_, name, w, h)| (name, w, h)).or_else(window::client)
-}
-
-/// Whether a person is attached to the session through tmux (not `orcux window`, not a connection of orcux).
-fn people_attached() -> bool {
-    tmux(&["list-clients", "-t", UI, "-F", "#{client_control_mode}"]).is_ok_and(|s| s.lines().any(|l| l != "1"))
+    people.max_by_key(|c| c.0).map(|(_, name, w, h)| (name, w, h))
 }
 
 pub fn detach() -> Res<()> {
@@ -987,7 +983,7 @@ pub fn show_tab(w: &Wt, tab: Option<u32>) -> Res<()> {
 
 /// Runs `orcux <args>` in a tmux popup centered over the whole UI (the sidebar alone is too narrow). Blocks until closed.
 pub fn popup(title: &str, want: (u32, u32), args: &[&str]) -> Res<()> {
-    if window::client().is_some() && !people_attached() {
+    if window::client().is_some_and(|w| viewer().is_some_and(|v| v.0 == w.0)) {
         return window::popup(title, want, args);
     }
     let exe = env::current_exe().map_err(|e| e.to_string())?;
