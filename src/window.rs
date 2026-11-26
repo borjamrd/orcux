@@ -886,7 +886,10 @@ impl Window {
         if let Some(t) = terminal && !t.mark.is_empty() {
             let mut x = t.at.0 + 1;
             for p in &self.tabs {
-                let name = format!(" {} {} ", p.tab, tui::program(&p.cmd));
+                // what its agent does, as in the sidebar: nothing when it is idle
+                let (glyph, color) = tui::look_hex(p.look());
+                let sign = if p.look() == prs::State::Idle { String::new() } else { format!("{glyph} ") };
+                let name = format!(" {} {sign}{} ", p.tab, tui::program(&p.cmd));
                 let w = Span::raw(&name).width() as u16;
                 // no room left before the corner: say that there are more
                 if x + w + 6 > right {
@@ -895,13 +898,16 @@ impl Window {
                     break;
                 }
                 let start = x;
+                let at = |x: u16| x + 1 + Span::raw(format!(" {} ", p.tab)).width() as u16;
                 if p.pane == t.pane {
                     buf.set_string(x, 0, "┤", line);
                     buf.set_string(x + 1, 0, &name, Style::new().fg(foam).bold());
                     buf.set_string(x + 1 + w, 0, "├", line);
+                    if !sign.is_empty() { buf.set_string(at(x), 0, glyph, Style::new().fg(Color::from_u32(color)).bold()); }
                     x += w + 2;
                 } else {
                     buf.set_string(x, 0, &name, Style::new().fg(muted));
+                    if !sign.is_empty() { buf.set_string(at(x) - 1, 0, glyph, Style::new().fg(Color::from_u32(color))); }
                     x += w;
                 }
                 self.spots.push((start, x, Spot::Tab(p.tab)));
