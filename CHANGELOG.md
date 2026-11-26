@@ -1,9 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
-- The first time, `orcux` inside a repo adds it, and the empty screen lists the first steps: project, agent, skill for every agent, first worktree. `a` chooses the agent of `orcux run`, also your own command; Antigravity is one of those it knows.
+- Homebrew: `brew trust --formula borjamrd/tap/orcux && brew install borjamrd/tap/orcux`.
+- The first time, `orcux` inside a repo adds it, and the empty screen lists the first steps: project, agent, skill for every agent, first worktree.
+- `a`: the agent that `orcux run` starts; `e` edits its command (an alias or a wrapper of yours), and another one can be added. Antigravity is one of those it knows.
 - After a restart, Antigravity goes on with its conversation too, and Codex and Gemini CLI with the last one of their folder.
+- Web addresses that a terminal prints are underlined in `orcux window`, and a click opens them.
+- The worktree of a pull request is fetched as the GitHub account that sees it: with several accounts, a work repo was "not found".
+- The line under the cursor is shown in the diff; a shell tab stays idle when it is left for another.
+- Several `orcux rm` and `orcux new` at once no longer leave a worktree behind.
+- A test or a cleanup run from inside a terminal of orcux cannot reach its own server through `TMUX_TMPDIR` any more.
+- A web page (GitHub Pages), a logo, and the README demos recorded from a script.
 
 ## 0.2.0
 
