@@ -1499,6 +1499,7 @@ fn cli(a: &[&str]) -> Res<()> {
         ["dialog", "rmrepo", repo] => tui::dialog_rm_repo(Path::new(repo)),
         ["dialog", "rm", id] => tui::dialog_rm(&find(Some(id))?),
         ["dialog", "rename", id] => tui::dialog_rename(&find(Some(id))?),
+        ["dialog", "openpr", id] => tui::dialog_open_pr(&find(Some(id))?),
         ["dialog", "pr", repo, branch, label] => tui::dialog_pr(Path::new(repo), branch, label),
         ["dialog", "view", url] => tui::dialog_view(url),
         ["dialog", "diff", dir, path] => files::show(Path::new(dir), path),
@@ -1516,6 +1517,20 @@ fn cli(a: &[&str]) -> Res<()> {
             Ok(())
         }
         ["rm", q, rest @ ..] => remove(&find(Some(q))?, rest.contains(&"--force")),
+        ["pr", q, rest @ ..] => {
+            let w = find(Some(q))?;
+            let p = prs::proposal(&w)?;
+            if rest.contains(&"--check") {
+                println!("{} → {}  {}\n{}", p.branch, p.base, (tr().pr_commits)(p.ahead), p.title);
+                return Ok(());
+            }
+            if p.ahead == 0 {
+                return Err((tr().pr_nothing)(&p.base));
+            }
+            let (url, _) = prs::open_pr(&w, &p)?;
+            println!("{url}");
+            Ok(())
+        }
         ["rename", q, new] => {
             let w = rename(&find(Some(q))?, new)?;
             println!("{}  {}", w.id(), w.path().display());

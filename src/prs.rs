@@ -251,6 +251,72 @@ fn gh(args: &[&str], token: Option<&str>) -> Res<String> {
     }
 }
 
+/// A pull request that a worktree would open: its branch, the branch it goes into, its commits on top, and the title
+/// and description it gets, exactly.
+pub struct Proposal {
+    pub branch: String,
+    pub base: String,
+    pub ahead: u32,
+    pub title: String,
+    pub body: String,
+    /// it has changes without a commit, which stay out
+    pub dirty: bool,
+}
+
+/// What `open_pr` would do. A child goes into its parent's branch once that one is on GitHub, the others into the
+/// main branch of origin. Read from what was fetched last: nothing goes to the network.
+pub fn proposal(w: &Wt) -> Res<Proposal> {
+    let path = w.path();
+    let branch = w.branch().ok_or(tr().merge_detached)?;
+    let has = |r: &str| git(&path, &["rev-parse", "--verify", "--quiet", r]).is_ok();
+    let on_origin = |b: &String| has(&format!("refs/remotes/origin/{b}"));
+    let parent = w.parent.as_ref().and_then(|p| load().into_iter().find(|x| x.repo == w.repo && &x.name == p)).and_then(|p| p.branch());
+    let main = git(&path, &["rev-parse", "--abbrev-ref", "origin/HEAD"]).ok().and_then(|b| b.strip_prefix("origin/").map(String::from));
+    let base = parent.filter(on_origin)
+        .or(main)
+        .or_else(|| ["main", "master"].into_iter().map(String::from).find(on_origin))
+        .ok_or(tr().pr_no_base)?;
+    let ahead = git(&path, &["rev-list", "--count", &format!("origin/{base}..HEAD")])?.parse().unwrap_or(0);
+    // as one commit says it; several are listed, under the name of the branch
+    let (title, body) = if ahead == 1 {
+        (git(&path, &["log", "-1", "--format=%s"])?, git(&path, &["log", "-1", "--format=%b"])?)
+    } else {
+        let list = git(&path, &["log", "--reverse", "--format=- %s", &format!("origin/{base}..HEAD")])?;
+        (branch.clone(), list)
+    };
+    let dirty = git(&path, &["status", "--porcelain"]).is_ok_and(|s| !s.is_empty());
+    Ok(Proposal { branch, base, ahead, title, body, dirty })
+}
+
+/// Pushes the branch and opens its pull request, as the gh account that can push to its repo: (its URL, whether it is
+/// new). One already open for the branch is given back instead.
+pub fn open_pr(w: &Wt, p: &Proposal) -> Res<(String, bool)> {
+    let path = w.path();
+    let slug = slug(&git(&path, &["remote", "get-url", "origin"])?).ok_or(tr().pr_no_github)?;
+    let logins = gh(&["auth", "status", "--json", "hosts", "--jq", r#".hosts["github.com"][] | .login"#], None)?;
+    let mut logins: Vec<&str> = logins.lines().collect();
+    logins.dedup();
+    let can_push = |t: &Option<String>| gh(&["api", &format!("repos/{slug}"), "--jq", ".permissions.push"], t.as_deref()).is_ok_and(|s| s == "true");
+    let token = logins.into_iter().map(token).find(can_push).ok_or_else(|| (tr().pr_no_access)(&slug))?;
+    let token = token.as_deref();
+    let open = gh(&["pr", "list", "--repo", &slug, "--head", &p.branch, "--state", "open", "--json", "url", "--jq", ".[0].url // empty"], token)?;
+    if !open.is_empty() {
+        return Ok((open, false));
+    }
+    // gh's credential helper, if git uses it, pushes as that same account
+    let mut push = Command::new("git");
+    push.args(["push", "-u", "origin", &p.branch]).current_dir(&path).env("GIT_TERMINAL_PROMPT", "0").stdin(std::process::Stdio::null());
+    if let Some(t) = token {
+        push.env("GH_TOKEN", t);
+    }
+    let o = push.output().map_err(|e| format!("git: {e}"))?;
+    if !o.status.success() {
+        return Err(format!("git push: {}", String::from_utf8_lossy(&o.stderr).trim()));
+    }
+    let url = gh(&["pr", "create", "--repo", &slug, "--head", &p.branch, "--base", &p.base, "--title", &p.title, "--body", &p.body], token)?;
+    Ok((url.lines().last().unwrap_or_default().to_string(), true))
+}
+
 /// None: the account is only known through the environment.
 fn token(login: &str) -> Option<String> {
     gh(&["auth", "token", "--user", login], Some("")).ok()

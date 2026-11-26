@@ -1003,6 +1003,10 @@ pub fn run() -> Res<()> {
                     app.error(&e);
                 }
             }
+            KeyCode::Char('P') => if let Some(Row::Wt(w, _)) = app.selected() {
+                let id = w.id();
+                app.popup(tr().title_open_pr, (76, 13), &["dialog", "openpr", &id]);
+            },
             KeyCode::Char('e') => if let Some(Row::Wt(w, _)) = app.selected() {
                 let id = w.id();
                 app.popup(tr().title_rename, DIALOG, &["dialog", "rename", &id]);
@@ -2041,6 +2045,59 @@ pub fn dialog_new(repo: &Path, parent: Option<&Wt>) -> Res<()> {
                 _ => {}
             }
         }
+    })
+}
+
+/// Pushes its branch and opens its pull request, after a yes that starts on no: it goes out to GitHub.
+pub fn dialog_open_pr(w: &Wt) -> Res<()> {
+    let found = prs::proposal(w);
+    dialog(|term| {
+        let field = |k: &str, v: String| Line::from(vec![tag(k).fg(MUTED), v.fg(FOAM)]);
+        let p = match found {
+            Ok(p) if p.ahead > 0 => p,
+            r => {
+                let e = r.map_or_else(|e| e, |p| (tr().pr_nothing)(&p.base));
+                draw_dialog(term, vec![Line::from(e).fg(CORAL)], tr().hint_any)?;
+                key()?;
+                return Ok(());
+            }
+        };
+        let (ask, mut yes) = ((tr().ask_open_pr)(&p.branch, &p.base), false);
+        let mut lines = vec![
+            Line::from(ask),
+            Line::default(),
+            field(tr().label_title, p.title.clone()),
+            field(tr().label_branch, format!("{} → {}  ({})", p.branch, p.base, (tr().pr_commits)(p.ahead))),
+        ];
+        if p.dirty {
+            lines.push(Line::from(tr().pr_dirty).fg(SIGNAL));
+        }
+        loop {
+            draw_choice(term, lines.clone(), yes, "")?;
+            match key()?.and_then(|k| chosen(k, &mut yes)) {
+                None => continue,
+                Some(false) => return Ok(()),
+                Some(true) => break,
+            }
+        }
+        lines.extend([Line::default(), Line::from(tr().pr_pushing).fg(CURRENT)]);
+        draw_dialog(term, lines.clone(), "")?;
+        lines.pop();
+        match prs::open_pr(w, &p) {
+            Ok((url, new)) => {
+                lines.push(Line::from(vec![format!("{} ", if new { tr().pr_opened } else { tr().pr_already }).fg(KELP), url.clone().fg(FOAM)]));
+                draw_dialog(term, lines, tr().hint_opened)?;
+                if key()? == Some(KeyCode::Char('o')) {
+                    open_url(&url).ok();
+                }
+            }
+            Err(e) => {
+                lines.push(Line::from(short(&e)).fg(CORAL));
+                draw_dialog(term, lines, tr().hint_any)?;
+                key()?;
+            }
+        }
+        Ok(())
     })
 }
 
