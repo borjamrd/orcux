@@ -572,6 +572,20 @@ fn add_worktree(repo: &Path, name: &str, path: &str, base: Option<&str>) -> Res<
     }
 }
 
+/// `git worktree remove`, again if a worktree being made or removed at the same moment broke it, as `add_worktree`.
+fn remove_worktree(repo: &Path, args: &[&str]) -> Res<()> {
+    let mut tries = 0;
+    loop {
+        match git(repo, args) {
+            Err(e) if tries < 5 && e.contains("worktrees/") && (e.contains("commondir") || e.contains("gitdir")) => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(100 * tries));
+            }
+            r => return r.map(|_| ()),
+        }
+    }
+}
+
 /// Copies the local-only files listed in the main checkout's .worktreeinclude.
 // ponytail: literal paths only (files or dirs); glob lines are skipped. Add `git ls-files -oi` if globs are needed.
 fn copy_includes(repo: &Path, dst: &Path) -> Res<()> {
@@ -686,7 +700,7 @@ pub fn remove_then(w: &Wt, force: bool, config: &config::Config, last: impl Fn()
         }
         last()?;
         let args: &[&str] = if force { &["worktree", "remove", "--force", p] } else { &["worktree", "remove", p] };
-        git(&w.repo, args)?; // first: if it fails, its terminal stays
+        remove_worktree(&w.repo, args)?; // first: if it fails, its terminal stays
     } else {
         git(&w.repo, &["worktree", "prune"])?;
     }
