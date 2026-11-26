@@ -16,8 +16,6 @@ class Orcux < Formula
   version "$version"
   license "MIT"
 
-  depends_on "tmux"
-
   on_macos do
     on_arm do
 $(asset aarch64-apple-darwin)

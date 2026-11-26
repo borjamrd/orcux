@@ -71,7 +71,12 @@ fn names_are_only_names() {
     let found = planted(&lab);
     assert!(found.is_empty(), "a branch name ran a command: {found}");
     lab.orcux(&["new", "fix-#Solo"]);
-    assert!(marks(&lab, "#{pane_current_path}").iter().any(|p| p.ends_with("/fix-#Solo")), "{:?}", marks(&lab, "#{pane_current_path}"));
+    // the folder of a new terminal is known a moment after it starts (on Linux, from its process)
+    let start = std::time::Instant::now();
+    while !marks(&lab, "#{pane_current_path}").iter().any(|p| p.ends_with("/fix-#Solo")) {
+        assert!(start.elapsed().as_secs() < 5, "{:?}", marks(&lab, "#{pane_current_path}"));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 
     lab.orcux(&["new", "t"]);
     lab.orcux(&["send", "t", "echo one; echo two;"]);

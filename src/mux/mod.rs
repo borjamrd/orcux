@@ -31,9 +31,22 @@ pub fn own() -> bool {
         match env::var("ORCUX_ENGINE").as_deref() {
             Ok("own") => true,
             Ok("tmux") => false,
-            _ => crate::read_state("engine").is_ok_and(|e| e.trim() == "own"),
+            _ => match crate::read_state("engine") {
+                Ok(e) if !e.trim().is_empty() => e.trim() == "own",
+                _ => first_choice(),
+            },
         }
     })
+}
+
+/// The first time, with nothing chosen: orcux's own engine, unless orcux already lives in tmux here (its session is
+/// there, or worktrees were made before this choice existed): those go on as they were. Kept, so it is asked once.
+fn first_choice() -> bool {
+    let in_tmux = !crate::load().is_empty()
+        && Command::new("tmux").args(["has-session", "-t", "=orcux"]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+    let own = !in_tmux;
+    crate::write_state("engine", if own { "own" } else { "tmux" }).ok();
+    own
 }
 
 /// The engines that `orcux engine` chooses from.

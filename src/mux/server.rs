@@ -308,6 +308,20 @@ fn name_of(pid: i32) -> Option<String> {
     std::fs::read_to_string(format!("/proc/{pid}/comm")).ok().map(|s| s.trim().to_string())
 }
 
+/// Rows of a screen as text, one per line. -N keeps the spaces at their end; -J joins a row that the terminal wrapped
+/// with the next one, as one line, as it was printed.
+fn plain_rows(screen: &vt100::Screen, row: u16, take: u16, cols: u16, keep: bool, join: bool) -> Vec<u8> {
+    let mut out = vec![];
+    for (i, r) in screen.rows(0, cols).enumerate().skip(row as usize).take(take as usize) {
+        let wrapped = join && screen.row_wrapped(i as u16);
+        out.extend(if keep || wrapped { r } else { r.trim_end().to_string() }.as_bytes());
+        if !wrapped {
+            out.push(b'\n');
+        }
+    }
+    out
+}
+
 /// tmux escapes what is not printable, and the backslash, as octal.
 #[cfg(test)]
 fn escape(b: &[u8]) -> String {
@@ -1190,10 +1204,7 @@ impl Server {
                             out.extend(b"\x1b[0m\n");
                         }
                     } else {
-                        for r in screen.rows(0, cols).skip(row as usize).take(take as usize) {
-                            out.extend(if a.has('N') { r } else { r.trim_end().to_string() }.as_bytes());
-                            out.push(b'\n');
-                        }
+                        out.extend(plain_rows(screen, row, take as u16, cols, a.has('N'), a.has('J')));
                     }
                     l += take.max(1);
                 }
@@ -1385,6 +1396,16 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrapped_rows_are_joined() {
+        let nz = |n: u16| std::num::NonZeroU16::new(n).unwrap();
+        let mut p = vt100::Parser::new(nz(3), nz(10), 0);
+        p.process(b"$ -n; echo three;\r\nthree");
+        let s = p.screen();
+        assert_eq!(String::from_utf8_lossy(&plain_rows(s, 0, 3, 10, false, true)), "$ -n; echo three;\nthree\n");
+        assert_eq!(String::from_utf8_lossy(&plain_rows(s, 0, 3, 10, false, false)), "$ -n; echo\n three;\nthree\n");
+    }
 
     #[test]
     fn arguments() {

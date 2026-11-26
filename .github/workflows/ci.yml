@@ -31,9 +31,18 @@ jobs:
         run: rustup update stable --no-self-update && rustup default stable && rustup component add clippy
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
+      - name: The same suites on orcux's own engine
+        run: cargo test --locked
+        env:
+          ORCUX_ENGINE: own
       - name: Speed
         # shared machines: the times get room, the number of processes does not
         run: cargo test --release --locked --test perf -- --ignored --nocapture
         env:
           ORCUX_PERF_ROOM: 6
+      - name: Speed on orcux's own engine
+        run: cargo test --release --locked --test perf -- --ignored --nocapture
+        env:
+          ORCUX_PERF_ROOM: 6
+          ORCUX_ENGINE: own
       - run: cargo run --release --locked -- doctor

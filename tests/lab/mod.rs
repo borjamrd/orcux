@@ -52,7 +52,7 @@ impl Lab {
     pub fn cmd(&self, program: &str) -> Command {
         let mut c = Command::new(program);
         let path = format!("{}:{}", self.dir.join("bin").display(), std::env::var("PATH").unwrap_or_default());
-        c.env("HOME", self.dir.join("home")).env("TMUX_TMPDIR", self.dir.join("tmux")).env("ORCUX_LAUNCHD", "0").env("PATH", path).env("SHELL", "/bin/sh").env("LANG", "en_US.UTF-8");
+        c.env("HOME", self.dir.join("home")).env("TMUX_TMPDIR", self.dir.join("tmux")).env("ORCUX_LAUNCHD", "0").env("ORCUX_ENGINE", if own() { "own" } else { "tmux" }).env("PATH", path).env("SHELL", "/bin/sh").env("LANG", "en_US.UTF-8");
         for k in ["TMUX", "TMUX_PANE", "ORCUX_ID", "ORCUX_LANG", "LC_ALL", "GH_TOKEN", "ORCUX_MUX"] {
             c.env_remove(k);
         }
