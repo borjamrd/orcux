@@ -413,3 +413,23 @@ fn includes_copy_paths_and_patterns() {
     }
     assert!(!w.join("keep.env").exists() && !w.join("missing.txt").exists());
 }
+
+#[test]
+fn another_machine_through_ssh() {
+    let Some(lab) = ready() else { return };
+    // a pretend ssh: orcux is missing there until the install script runs
+    let log = lab.dir.join("ssh-log");
+    let there = lab.dir.join("installed");
+    lab::write_exe(&lab.dir.join("bin/ssh"), &format!("#!/bin/sh\necho \"$*\" >> {log}\ncase \"$*\" in *install.sh*) touch {there}; exit 0;; esac\n[ -e {there} ] && exit 0\nexit 127\n", log = log.display(), there = there.display()));
+    let cmd = format!("{ORCUX} ssh box ls; echo code=$?; sleep 30");
+    lab.tmux(&["-L", "person", "-f", "/dev/null", "new-session", "-d", "-s", "p", "-x", "120", "-y", "20", &cmd]);
+    let screen = || lab.tmux(&["-L", "person", "capture-pane", "-p", "-t", "p"]);
+    until("it offers to install", || screen().contains("[y/N]"));
+    lab.tmux(&["-L", "person", "send-keys", "-t", "p", "y", "Enter"]);
+    until("it ends", || screen().contains("code=0"));
+    lab.tmux(&["-L", "person", "kill-server"]);
+    let calls: Vec<String> = fs::read_to_string(&log).unwrap().lines().map(String::from).collect();
+    assert_eq!(calls.len(), 3, "{calls:?}");
+    assert!(calls[0].starts_with("-t -- box exec \"$SHELL\" -lc ") && calls[0].contains("orcux") && calls[0].contains("ls"), "{calls:?}");
+    assert!(calls[1].contains("install.sh | sh") && calls[2] == calls[0], "{calls:?}");
+}

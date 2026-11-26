@@ -202,6 +202,10 @@ pub struct Text {
     pub no_worktree_here: &'static str,
     pub ambiguous: &'static str,
     pub exists: fn(&str) -> String,
+    pub url_over_ssh: fn(&str) -> String,
+    pub ssh_usage: &'static str,
+    pub ssh_install: fn(&str) -> String,
+    pub ssh_install_failed: fn(&str) -> String,
     /// push the branch (1st) and open a pull request into the base (2nd)?
     pub ask_open_pr: fn(&str, &str) -> String,
     pub pr_commits: fn(u32) -> String,

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `orcux ssh <machine>`: orcux on another machine, installed there if it is missing; over SSH a click on an address copies it.
 - `.worktreeinclude` takes patterns as in `.gitignore` (`*.env`, `!keep.env`), not only paths.
 - `compose = docker-compose.yml` in `.orcux`: several worktrees run the same Docker Compose file at once, each on ports of its own.
 

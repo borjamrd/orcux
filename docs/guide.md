@@ -38,6 +38,14 @@ orcux keeps the terminals alive in a small server of its own: close orcux, or lo
 
 On a Mac the server starts as a service of macOS, so that the terminals outlive the app that opened orcux. So when a program in one of them asks for something macOS guards (your photos, contacts, the camera…), the question comes in the name of orcux, as it would come in the name of your terminal app without orcux. orcux itself asks for none of that: answer as you would for that program. What you allowed or not is under System Settings › Privacy & Security, as orcux.
 
+## On another machine
+
+```sh
+orcux ssh my-server        # as for ssh: a host, user@host or an alias of ~/.ssh/config
+```
+
+orcux runs on that machine, in this terminal: its worktrees, agents and ports are there. Close the connection, or lose it, and they go on; the same command comes back to them. If orcux is not there yet, it offers to install it with its install script. Over SSH a click on a web address copies it to this computer's clipboard instead of opening a browser on the other one.
+
 ## For agents and scripts
 
 ```sh

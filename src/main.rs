@@ -1161,8 +1161,51 @@ pub fn style_ui() -> Res<()> {
 }
 
 pub fn open_url(url: &str) -> Res<()> {
+    // over SSH the browser would open on the other machine, where nobody looks
+    if over_ssh() {
+        return Err((tr().url_over_ssh)(url));
+    }
     run(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }, &[url], None).map(|_| ())
 }
+
+/// This runs on a machine reached through SSH.
+pub fn over_ssh() -> bool {
+    ["SSH_CONNECTION", "SSH_TTY"].iter().any(|k| env::var(k).is_ok_and(|v| !v.is_empty()))
+}
+
+/// `orcux ssh <target>`: orcux on another machine, in this terminal. Its terminals stay there when the connection
+/// drops; the same command comes back to them. If orcux is not there, it offers to install it, after a yes.
+fn ssh(target: &str, rest: &[&str]) -> Res<()> {
+    if target.starts_with('-') {
+        return Err(tr().ssh_usage.into());
+    }
+    // a login shell: ~/.local/bin is in its PATH, as in a terminal of that machine
+    let open = |args: &[&str]| -> Res<Option<i32>> {
+        let cmd = format!("exec \"$SHELL\" -lc {}", config::sh(&std::iter::once("orcux").chain(args.iter().copied()).map(config::sh).collect::<Vec<_>>().join(" ")));
+        Command::new("ssh").args(["-t", "--", target, &cmd]).status().map(|s| s.code()).map_err(|e| format!("ssh: {e}"))
+    };
+    match open(rest)? {
+        Some(127) => {}
+        Some(0) | None => return Ok(()),
+        Some(n) => return Err(format!("ssh {target}: {n}")),
+    }
+    print!("{} ", (tr().ssh_install)(target));
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer).map_err(|e| e.to_string())?;
+    if !["y", "s", "yes", "si", "sí"].contains(&answer.trim().to_lowercase().as_str()) {
+        return Ok(());
+    }
+    let install = format!("curl -fsSL {INSTALL} | sh");
+    let ok = Command::new("ssh").args(["-t", "--", target, &install]).status().map_err(|e| format!("ssh: {e}"))?;
+    if !ok.success() {
+        return Err((tr().ssh_install_failed)(target));
+    }
+    open(rest).map(|_| ())
+}
+
+/// The install script, as the README gives it.
+const INSTALL: &str = "https://raw.githubusercontent.com/borjamrd/orcux/master/packaging/install.sh";
 
 pub fn show(w: &Wt) -> Res<()> {
     show_tab(w, None)
@@ -1512,6 +1555,7 @@ fn cli(a: &[&str]) -> Res<()> {
         ["restore", rest @ ..] => restore::cmd(rest),
         ["dialog", "merge", id] => tui::dialog_merge(&find(Some(id))?),
         ["skill", "install"] => agent::install_skill(),
+        ["ssh", target, rest @ ..] => ssh(target, rest),
         ["skill", "remove"] => agent::remove_skill(),
         ["skill"] => {
             print!("{}", agent::SKILL);

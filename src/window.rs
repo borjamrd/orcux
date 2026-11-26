@@ -796,7 +796,8 @@ impl Window {
                     copy(&scr.screen().contents_between(r0, c0, r1, c1 + 1));
                 } else if let Some(url) = url_at(scr.screen(), s.from.0, s.from.1) {
                     // a click on an address, without dragging: the browser, as a terminal does
-                    std::thread::spawn(move || drop(open_url(&url)));
+                    // over SSH the browser is on the other machine: the address goes to the clipboard of this one
+                    if over_ssh() { copy(&url) } else { std::thread::spawn(move || drop(open_url(&url))); }
                 }
             }
             self.dirty = true;
