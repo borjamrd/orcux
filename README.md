@@ -1,146 +1,30 @@
 <h1>orcux</h1>
 
-Git worktrees, ports and terminals for several coding agents at once, in the terminal you already use.
+Run several coding agents at once, each in a git worktree of its own. Ultra fast, ultra light, in the terminal you already use.
 
 ![orcux: worktrees on the left, the terminal of an agent in the middle, pull requests on the right](docs/demo.gif)
 
-- **A worktree per task.** One key creates the branch, the folder, the terminal and a block of 100 ports of its own.
-- **You see who needs you.** Agents tell when they work (`●`), ask or need permission (`?`), fail (`!`) or are done (`■`), the system notifies you, and one key takes you there. Nothing in your settings is changed.
-- **Agents go on without you.** tmux runs the terminals: close orcux, or lose the connection, and come back.
-- **A window of its own.** orcux draws the window itself: the agent's terminal in a frame, tabs you click, dialogs over everything, the wheel for history and the mouse to select and copy.
-- **Your pull requests beside them**, read-only: whose turn it is, what fails, and a key to hand it to the agent.
-- **Agents that hand over work.** A CLI and a skill: an agent can start others in worktrees of their own, wait for them and read what they did.
-- **Fast.** One binary of under 2 MB. With 50 terminals at rest it starts no processes and uses about 0.1 % of a core per pane.
+- **A worktree per task**: branch, folder, terminal and 100 ports of its own, with one key.
+- **See who needs you**: working `●`, asking `?`, failed `!`, done `■`. One key takes you there.
+- **Agents go on without you**: close orcux and come back.
+- **Bring the work back**: files and diffs, conflicts, merge, and your pull requests beside it.
+- **Fast and light**: one binary under 2 MB. 50 terminals at rest cost nothing; `orcux ls` answers in under 10 ms.
 
 ## Install
 
-You need [tmux](https://github.com/tmux/tmux) 3.6 and git 2.38, or later. tmux 3.3 to 3.5 should work, with lines between panes; it is not tested. [gh](https://cli.github.com) is optional: it shows your pull requests.
-
-From the source:
-
 ```sh
-cargo install --git https://github.com/borjamrd/orcux
-orcux doctor   # checks what orcux needs
+curl -fsSL https://raw.githubusercontent.com/borjamrd/orcux/master/packaging/install.sh | sh
 ```
 
-macOS and Linux.
+macOS and Linux. Needs git; [gh](https://cli.github.com) adds your pull requests.
 
-## Start
+## Use
 
 ```sh
 cd your-repo
-orcux repo add
 orcux
 ```
 
-Press `n` to create a worktree, `⏎` to open it, and start your agent there. `Opt+o` (or `?` in the sidebar) lists everything else.
+`n` new worktree · `⏎` open it · `Opt+o` every command
 
-`orcux ui window` makes `orcux` open the window that orcux draws itself, the one in the image; `orcux ui classic` goes back to tmux's own. Inside tmux, `orcux` is always the classic one.
-
-| Key | |
-| --- | --- |
-| `n` / `N` | new worktree / new one from the selected one |
-| `⏎` | open the selected worktree |
-| `Opt+w` | switch worktree, by name or pull request |
-| `Opt+r` | go to the agent that waits for you |
-| `Opt+t`, `Opt+a`, `Opt+d`, `Opt+q` | new, previous, next and close tab |
-| `tab` | go to the pull requests |
-| `q` | leave; the terminals stay alive |
-
-With `orcux ui window`, the mouse too:
-
-| Mouse | |
-| --- | --- |
-| click | select a row, or the pane you work in; again on a row, open it |
-| click on a tab, on `+` | show that tab, open a new one |
-| wheel | the terminal's history; any key goes back |
-| drag | select and copy; with Shift in programs that use the mouse |
-
-## For agents and scripts
-
-```sh
-orcux run "fix the login redirect, with a test"  # worktree, ports, and an agent at that task
-orcux wait fix-the-login-redirect --timeout 600  # until it stops working
-orcux read fix-the-login-redirect 40             # the end of its terminal
-orcux send fix-the-login-redirect "go on"        # types it, with Enter
-orcux ls --json                                  # every worktree and what its agents do
-orcux rm fix-the-login-redirect                  # keeps the branch
-```
-
-`wait` ends with 0 when the agent is done, 2 when it asks something or needs permission, 3 when it failed, 4 on timeout and 5 when there is no agent. Several commands can run at once. `orcux help` lists them all.
-
-Claude Code agents get this as a skill in the terminals of orcux. For others, `orcux skill` prints it.
-
-## Agents
-
-`orcux run` knows Claude Code, Codex, Gemini CLI, OpenCode and Cursor. `orcux agents` lists them, `orcux agents use codex` changes the default and `orcux agents set mine "my-agent --task {prompt}"` adds or replaces one.
-
-| What they do is known | |
-| --- | --- |
-| Claude Code | from its hooks |
-| OpenCode | from a plugin, exactly |
-| Gemini CLI, Codex | from the title of their terminal, as documented; not tested with the real ones yet |
-| others | only whether their screen moves |
-
-`orcux notify off` turns notifications off; `all` also tells when an agent is done.
-
-## The window
-
-`orcux window` draws the interface itself, with the same sidebar, terminals and pull requests as the classic one: tmux keeps running them underneath, so both can be opened at any time, and agents go on when either is closed. It is new: if something looks wrong, `orcux ui classic` and tell us.
-
-## Each repo, its needs
-
-A `.orcux` file in the main checkout says what its worktrees need:
-
-```
-setup = npm ci
-link = node_modules
-port DB_PORT = 1
-env DATABASE_URL = postgres://localhost:${DB_PORT}/${ORCUX_NAME}
-teardown = docker compose down -v
-```
-
-`setup` runs in the terminal of every new worktree, `teardown` before one is deleted, `link` shares a folder of the main checkout, `port` names one of its 100 ports and `env` adds variables. It can run commands, so nothing in it is used until you read and approve it with `orcux trust`, and again whenever it changes. `orcux ports` lists the ports and which are in use.
-
-## Bringing work back
-
-```sh
-orcux conflicts                  # which worktrees clash, also with uncommitted work
-orcux merge fix-login --check    # what would happen
-orcux merge fix-login            # merges its branch, then deletes the worktree and the branch
-```
-
-A child goes into its parent, the others into the main branch. Nothing is pushed. It refuses when there are uncommitted changes, when its agent works or when its pull request is open. `m` does it from the sidebar.
-
-## After a restart
-
-If tmux ends, orcux remembers which terminals were open and which conversations their agents had. Press `R` on the empty screen, or run `orcux restore`, and Claude Code and OpenCode go on where they were.
-
-## Ports
-
-Worktrees share your computer, so two servers on port 3000 collide. Each terminal gets its own block:
-
-| Variable | |
-| --- | --- |
-| `ORCUX_PORT` | the first of 100 ports: 10100, 10200… |
-| `ORCUX_SLOT`, `ORCUX_ID` | the number and the name of the worktree |
-| `COMPOSE_PROJECT_NAME` | so that Docker Compose keeps them apart |
-
-Use them in your scripts: `vite --port $ORCUX_PORT`. Files that git ignores and you need in every worktree, such as `.env`, go in a `.worktreeinclude`.
-
-## Languages
-
-English and Spanish, after your system or with `orcux lang`.
-
-## License
-
-[MIT](LICENSE)
-
-## Development
-
-```sh
-cargo test
-cargo test --release --test perf -- --ignored --nocapture   # what 50 terminals cost
-```
-
-Tests use a tmux server of their own, never yours.
+More in the [guide](docs/guide.md). [MIT](LICENSE).

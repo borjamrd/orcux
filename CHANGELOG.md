@@ -1,6 +1,9 @@
 # Changelog
 
-## 0.1.0, not released yet
+## 0.1.0
+
+- orcux keeps the terminals itself: tmux is not needed. Installs that already used tmux go on with it; `orcux engine` changes it.
+- Install with one line: `curl … | sh`, which checks the checksum.
 
 - Worktrees with a branch, a folder, a terminal and 100 ports of their own; nested and imported ones.
 - Tabs per worktree, and a switcher by name or pull request.
@@ -13,7 +16,8 @@
 - `f` in the sidebar: the files of a worktree and what changed in each, with its diff.
 - Click in the sidebar to select a worktree.
 - The logo waves in the commands dialog.
-- `orcux window` (preview): the interface drawn by orcux itself, with a full frame, clickable tabs, history with the wheel and copy with the mouse.
+- The interface drawn by orcux itself, with a full frame, clickable tabs, history with the wheel and copy with the mouse.
+- Opt+o: every command from any pane. Opt+w shows which worktrees have an agent open.
 - Your pull requests, read-only, with what blocks each one.
 - A CLI to create worktrees and to type into and read their terminals, safe to run several times at once.
 - `orcux doctor`.

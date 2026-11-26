@@ -11,7 +11,7 @@ case "$(uname -s)-$(uname -m)" in
   Darwin-x86_64) target=x86_64-apple-darwin ;;
   Linux-x86_64) target=x86_64-unknown-linux-musl ;;
   Linux-aarch64 | Linux-arm64) target=aarch64-unknown-linux-musl ;;
-  *) fail "no binary for $(uname -s) $(uname -m): try cargo install orcux" ;;
+  *) fail "no binary for $(uname -s) $(uname -m): try cargo install --git $repo" ;;
 esac
 file=orcux-$target.tar.gz
 from=${ORCUX_URL:-$repo/releases/${ORCUX_VERSION:+download/v$ORCUX_VERSION}}
