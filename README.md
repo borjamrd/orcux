@@ -1,8 +1,10 @@
+<picture><source media="(prefers-color-scheme: dark)" srcset="site/logo.svg"><img src="site/logo-light.svg" alt="" width="96"></picture>
+
 <h1>orcux</h1>
 
 Run several coding agents at once, each in a git worktree of its own. Ultra fast, ultra light, in the terminal you already use.
 
-![orcux: worktrees on the left, the terminal of an agent in the middle, pull requests on the right](docs/demo.gif)
+![orcux: worktrees with what their agents do on the left, the agent's terminal in the middle, your pull requests on the right; Opt+r straight to the agent that asks, a diff commented line by line and handed to its agent, and its pull request one key away](docs/demo.gif)
 
 - **A worktree per task**: branch, folder, terminal and 100 ports of its own, with one key.
 - **See who needs you**: working `●`, asking `?`, failed `!`, done `■`. One key takes you there.
@@ -43,5 +45,19 @@ orcux
 ```
 
 `n` new worktree · `⏎` open it · `Opt+o` every command
+
+## More in motion
+
+**Agents go on without you**: close orcux, or the terminal, and open it again: they kept working.
+
+![orcux: q closes it while its agents work; orcux opens it again where they are, and one finished meanwhile](docs/demo-survive.gif)
+
+**Move between worktrees**: `Opt+w` finds one by its name or its pull request, `Opt+w ⏎` goes back and forth, `Opt+t` opens a tab with the ports of its worktree.
+
+![orcux: Opt+w finds a worktree by name or by pull request and shows it; a new tab prints the worktree's port](docs/demo-switch.gif)
+
+**Sub-agents**: an agent hands parts of its task to others with `orcux run --parent`, each in a child worktree under its own, and waits for them.
+
+![orcux: an agent creates three child worktrees with an agent each; they work, end one after the other, and the first agent sums up](docs/demo-agents.gif)
 
 More in the [guide](docs/guide.md). [MIT](LICENSE).

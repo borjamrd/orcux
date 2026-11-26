@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>orcux: several coding agents at once, each in a worktree of its own</title>
+<meta name="description" content="Run several coding agents at once, each in a git worktree of its own. Ultra fast, ultra light, in the terminal you already use.">
+<meta name="theme-color" content="#0f1114">
+<meta property="og:title" content="orcux">
+<meta property="og:description" content="Run several coding agents at once, each in a git worktree of its own. Ultra fast, ultra light, in the terminal you already use.">
+<meta property="og:image" content="https://borjamrd.github.io/orcux/og.png">
+<meta property="og:url" content="https://borjamrd.github.io/orcux/">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<style>
+/* the colors of src/theme.rs */
+:root {
+  --abyss: #0f1114; --hull: #181b20; --wake: #2a2f36; --line: #4a525c; --foam: #e8eaed; --muted: #9aa1a9;
+  --current: #8ab8f5; --signal: #e0b060; --coral: #f08a78; --kelp: #a3d39c; --deep: #24528c;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { background: var(--abyss); color: var(--foam); }
+body { margin: 0; font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+a { color: var(--current); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, pre, .mono { font-family: var(--mono); }
+main, header, footer { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+
+header { display: flex; align-items: center; gap: 10px; height: 64px; font-family: var(--mono); }
+header img { width: 22px; height: 22px; }
+header b { font-size: 18px; }
+header nav { margin-left: auto; display: flex; gap: 24px; font-size: 15px; }
+header nav a { color: var(--muted); }
+header nav a:hover { color: var(--foam); text-decoration: none; }
+
+.hero { display: grid; grid-template-columns: 1fr 1.1fr; gap: 48px; align-items: center; padding: 56px 0 72px; }
+/* the mark, and a light running across it diagonally, as in the commands dialog */
+.hero > * { min-width: 0; }
+.mark { position: relative; width: 100%; aspect-ratio: 86 / 72; background: url(logo.svg) center / contain no-repeat; }
+.mark::after {
+  content: ""; position: absolute; inset: 0;
+  -webkit-mask: url(logo.svg) center / contain no-repeat; mask: url(logo.svg) center / contain no-repeat;
+  background: linear-gradient(105deg, transparent 42%, rgba(232, 234, 237, .7) 50%, transparent 58%) 0 0 / 300% 100%;
+  animation: wave 5s linear infinite;
+}
+@keyframes wave { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@media (prefers-reduced-motion: reduce) { .mark::after { display: none; } }
+
+h1 { font: 600 clamp(28px, 4.4vw, 48px)/1.12 var(--mono); letter-spacing: -.02em; margin: 0 0 18px; }
+.lead { color: var(--muted); font-size: 19px; margin: 0 0 32px; }
+.install { display: flex; align-items: center; background: var(--hull); border: 1px solid var(--wake); border-radius: 10px; font: 14px var(--mono); }
+.install code { flex: 1; padding: 14px 0 14px 16px; overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
+.install code::before { content: "$ "; color: var(--line); }
+button { font: inherit; color: var(--muted); background: none; border: 0; border-left: 1px solid var(--wake); padding: 14px 16px; cursor: pointer; }
+button:hover { color: var(--foam); }
+.note { color: var(--muted); font-size: 14px; margin: 12px 0 0; }
+details { margin-top: 18px; font-size: 15px; color: var(--muted); }
+summary { cursor: pointer; }
+details pre { white-space: pre-wrap; background: var(--hull); border-radius: 10px; padding: 14px 16px; font-size: 13px; color: var(--foam); }
+
+.demo { background: var(--hull); border: 1px solid var(--wake); border-radius: 14px; padding: 10px; }
+.demo video { display: block; width: 100%; height: auto; border-radius: 8px; }
+
+section { padding: 72px 0 0; }
+h2 { font: 600 26px/1.2 var(--mono); margin: 0 0 28px; }
+.features { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 16px; }
+.features div { background: var(--hull); border-radius: 12px; padding: 22px 24px; }
+.features h3 { font-size: 17px; margin: 0 0 6px; }
+.features p { margin: 0; color: var(--muted); font-size: 15px; }
+.st { font-family: var(--mono); font-weight: 700; }
+
+.table { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 15px; }
+th, td { text-align: right; padding: 12px 14px; border-bottom: 1px solid var(--wake); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; white-space: normal; }
+th { color: var(--muted); font-weight: 500; }
+td:nth-child(2), th:nth-child(2) { color: var(--current); font-family: var(--mono); font-weight: 600; }
+td:last-child { color: var(--muted); }
+
+.use { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.use pre { margin: 0; background: var(--hull); border-radius: 12px; padding: 22px 24px; font-size: 15px; }
+.keys { display: flex; flex-direction: column; justify-content: center; gap: 10px; background: var(--hull); border-radius: 12px; padding: 22px 24px; color: var(--muted); }
+kbd { font: 600 14px var(--mono); color: var(--foam); background: var(--wake); border-radius: 6px; padding: 2px 8px; margin-right: 8px; }
+
+footer { display: flex; flex-wrap: wrap; gap: 24px; padding-top: 72px; padding-bottom: 48px; color: var(--muted); font-size: 14px; }
+footer a { color: var(--muted); }
+footer span { margin-left: auto; }
+
+@media (max-width: 820px) {
+  .hero { grid-template-columns: 1fr; gap: 32px; padding-top: 24px; }
+  .mark { max-width: 280px; }
+  .use { grid-template-columns: 1fr; }
+  header nav a:not(:last-child) { display: none; }
+}
+</style>
+</head>
+<body>
+<header>
+  <img src="favicon.svg" alt=""><b>orcux</b>
+  <nav><a href="https://github.com/borjamrd/orcux/blob/master/docs/guide.md">Guide</a><a href="https://github.com/borjamrd/orcux/blob/master/docs/speed.md">Speed</a><a href="https://github.com/borjamrd/orcux">GitHub</a></nav>
+</header>
+<main>
+  <div class="hero">
+    <div class="mark" role="img" aria-label="The orcux mark: an o of dots with an x below"></div>
+    <div>
+      <h1>Several coding agents at once, each in a worktree of its own.</h1>
+      <p class="lead">Ultra fast, ultra light, in the terminal you already use.</p>
+      <div class="install"><code id="cmd">curl -fsSL https://raw.githubusercontent.com/borjamrd/orcux/master/packaging/install.sh | sh</code><button id="copy">Copy</button></div>
+      <p class="note">macOS and Linux. Needs git; <a href="https://cli.github.com">gh</a> adds your pull requests.</p>
+      <details><summary>Or ask your coding agent</summary><pre>Install orcux from https://github.com/borjamrd/orcux with its install script (curl -fsSL https://raw.githubusercontent.com/borjamrd/orcux/master/packaging/install.sh | sh). Make sure ~/.local/bin is in my PATH, then run orcux doctor and tell me what it reports.</pre></details>
+    </div>
+  </div>
+
+  <div class="demo"><video src="demo.mp4" poster="demo.jpg" width="1120" height="570" autoplay loop muted playsinline aria-label="orcux: worktrees on the left, the terminal of an agent in the middle, pull requests on the right"></video></div>
+
+  <section>
+    <h2>What it does</h2>
+    <div class="features">
+      <div><h3>A worktree per task</h3><p>Branch, folder, terminal and 100 ports of its own, with one key.</p></div>
+      <div><h3>See who needs you</h3><p>Working <span class="st" style="color:var(--current)">●</span>, asking <span class="st" style="color:var(--signal)">?</span>, failed <span class="st" style="color:var(--coral)">!</span>, done <span class="st" style="color:var(--kelp)">■</span>. One key takes you there.</p></div>
+      <div><h3>Agents go on without you</h3><p>Close orcux and come back: every terminal is where you left it.</p></div>
+      <div><h3>Bring the work back</h3><p>Files and diffs, conflicts, merge, and your pull requests beside it.</p></div>
+      <div><h3>Fast and light</h3><p>One binary under 2 MB, no tmux needed.</p></div>
+      <div><h3>Any agent</h3><p>Claude Code, OpenCode, Codex, Gemini CLI, Antigravity, or whatever runs in a terminal.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>10 worktrees, a terminal each, at rest</h2>
+    <div class="table"><table>
+      <tr><th></th><th>orcux</th><th>another TUI (a Rust multiplexer)</th><th>another app (Electron)</th><th>difference</th></tr>
+      <tr><td>memory, all its processes</td><td>24 MB</td><td>55 MB</td><td>≈ 1.2 GB</td><td>2.3× and ≈ 49× less</td></tr>
+      <tr><td>CPU at rest</td><td>0.10 %</td><td>0.60 %</td><td>1.4 %</td><td>6× and 14× less</td></tr>
+      <tr><td>list the worktrees from the CLI</td><td>20 ms</td><td>55 ms</td><td>171 ms</td><td>2.8× and 8.6× faster</td></tr>
+      <tr><td>size installed</td><td>2.0 MB</td><td>22.5 MB</td><td>773 MB</td><td>11× and 380× smaller</td></tr>
+    </table></div>
+    <p class="note">Same machine, same 10 worktrees: <a href="https://github.com/borjamrd/orcux/blob/master/docs/speed.md">how, and 50 terminals</a>.</p>
+  </section>
+
+  <section>
+    <h2>Use</h2>
+    <div class="use">
+      <pre><span style="color:var(--line)">$</span> cd your-repo
+<span style="color:var(--line)">$</span> orcux</pre>
+      <div class="keys"><div><kbd>n</kbd>new worktree</div><div><kbd>⏎</kbd>open it</div><div><kbd>Opt+o</kbd>every command</div></div>
+    </div>
+    <p class="note">More in the <a href="https://github.com/borjamrd/orcux/blob/master/docs/guide.md">guide</a>.</p>
+  </section>
+</main>
+<footer>
+  <a href="https://github.com/borjamrd/orcux/blob/master/docs/guide.md">Guide</a><a href="https://github.com/borjamrd/orcux/blob/master/CHANGELOG.md">Changelog</a><a href="https://github.com/borjamrd/orcux">GitHub</a><span>MIT</span>
+</footer>
+<script>
+copy.onclick = () => navigator.clipboard.writeText(cmd.textContent).then(() => { copy.textContent = "Copied"; setTimeout(() => copy.textContent = "Copy", 1500); });
+</script>
+</body>
+</html>
