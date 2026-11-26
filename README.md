@@ -1,6 +1,8 @@
-<picture><source media="(prefers-color-scheme: dark)" srcset="site/logo.svg"><img src="site/logo-light.svg" alt="" width="96"></picture>
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="site/logo.svg"><img src="site/logo-light.svg" alt="" width="96"></picture></p>
 
-<h1>orcux</h1>
+<h1 align="center">orcux</h1>
+
+<p align="center"><b>English</b> · <a href="README.es.md">Español</a></p>
 
 Run several coding agents at once, each in a git worktree of its own. Ultra fast, ultra light, in the terminal you already use.
 
