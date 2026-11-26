@@ -99,6 +99,7 @@ pub static ES: Text = Text {
     k_hide: "ocultar",
     k_refresh: "actualizar",
     k_back: "volver",
+    window_visible: "esa pestaña se ve en la otra interfaz: muestra otra allí",
     k_yes: "sí",
     k_no: "no",
     hint_choose: "←→ elegir  ⏎ aceptar",

@@ -10,6 +10,7 @@ mod prs;
 mod restore;
 mod theme;
 mod tui;
+mod window;
 mod work;
 
 use std::{collections::BTreeMap, env, fs, path::{Path, PathBuf}, process::Command, thread, time::Duration};
@@ -693,6 +694,8 @@ pub fn panes() -> Vec<Pane> {
             Pane { pane, wt, tab, on, busy, cmd, agent, mark, title, session, shell, activity }
         })
         .filter(|p| !p.wt.is_empty())
+        // a window linked in two sessions (a view of `orcux window`) lists its pane twice
+        .filter({ let mut seen = std::collections::HashSet::new(); move |p: &Pane| seen.insert(p.pane.clone()) })
         .collect()
 }
 
@@ -709,7 +712,7 @@ fn pane_of(id: &str) -> Option<String> {
 }
 
 /// "wt" or "wt:2" (git refs cannot contain ':').
-fn target(q: &str) -> Res<(Wt, Option<u32>)> {
+pub fn target(q: &str) -> Res<(Wt, Option<u32>)> {
     match q.rsplit_once(':').and_then(|(w, n)| Some((w, n.parse().ok()?))) {
         Some((w, n)) => Ok((find(Some(w))?, Some(n))),
         None => Ok((find(Some(q))?, None)),
@@ -717,7 +720,7 @@ fn target(q: &str) -> Res<(Wt, Option<u32>)> {
 }
 
 /// The pane of that tab, or of the active one, which is opened if there is none.
-fn pane_at(w: &Wt, tab: Option<u32>) -> Res<String> {
+pub fn pane_at(w: &Wt, tab: Option<u32>) -> Res<String> {
     let Some(n) = tab else { return ensure_pane(w) };
     let t = tabs(&w.id()).into_iter().find(|p| p.tab == n);
     t.map(|p| p.pane).ok_or_else(|| (tr().no_tab)(&format!("{}:{n}", w.id())))
@@ -1361,6 +1364,7 @@ fn cli(a: &[&str]) -> Res<()> {
             let (w, n) = target(q)?;
             close_tab(&w, n.ok_or(tr().which_tab)?)
         }
+        ["window", q] => window::run(q),
         ["tab", "click", range] => click_tab(range),
         ["tab", "next"] => step_tab(true),
         ["tab", "prev"] => step_tab(false),

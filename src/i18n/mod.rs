@@ -31,6 +31,7 @@ pub struct Text {
     pub k_hide: &'static str,
     pub k_refresh: &'static str,
     pub k_back: &'static str,
+    pub window_visible: &'static str,
     pub k_yes: &'static str,
     pub k_no: &'static str,
     pub hint_choose: &'static str,

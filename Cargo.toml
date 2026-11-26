@@ -13,6 +13,7 @@ exclude = ["docs/", ".github/", "packaging/", "CLAUDE.md"]
 
 [dependencies]
 ratatui = "0.30.2"
+vt100 = "0.18"
 
 [profile.release]
 lto = true

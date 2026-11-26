@@ -99,6 +99,7 @@ pub static EN: Text = Text {
     k_hide: "hide",
     k_refresh: "refresh",
     k_back: "back",
+    window_visible: "that tab is shown in the other interface: show another one there",
     k_yes: "yes",
     k_no: "no",
     hint_choose: "←→ choose  ⏎ accept",
