@@ -738,6 +738,7 @@ dependencies = [
 name = "orcux"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "ratatui",
  "vt100",
 ]

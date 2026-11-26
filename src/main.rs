@@ -6,6 +6,7 @@ mod doctor;
 mod i18n;
 mod mark;
 mod merge;
+mod mux;
 mod prs;
 mod restore;
 mod theme;
@@ -162,6 +163,9 @@ pub fn tmux(args: &[&str]) -> Res<String> {
     control::command(args).unwrap_or_else(|| {
         // as arguments of a process, a last ";" would separate commands
         let args: Vec<String> = args.iter().map(|a| a.strip_suffix(';').map_or(a.to_string(), |a| format!("{a}\\;"))).collect();
+        if mux::own() {
+            return mux::command(&args.iter().map(String::as_str).collect::<Vec<_>>());
+        }
         run("tmux", &args.iter().map(String::as_str).collect::<Vec<_>>(), None)
     })
 }
@@ -1275,11 +1279,12 @@ const UIS: [&str; 2] = ["classic", "window"];
 
 fn attach() -> Res<()> {
     // inside tmux the window would be drawn inside a pane: the classic switch is what fits there
-    if ui_choice() == "window" && env::var("TMUX").is_err() {
+    // the engine has no other interface than the window
+    if (ui_choice() == "window" || mux::own()) && !mux::inside() {
         return window::run();
     }
     ensure_ui()?;
-    if env::var("TMUX").is_ok() {
+    if mux::inside() {
         tmux(&["switch-client", "-t", UI]).map(|_| ())
     } else {
         Command::new("tmux").args(["attach", "-t", UI]).status().map(|_| ()).map_err(|e| e.to_string())
@@ -1426,6 +1431,8 @@ fn cli(a: &[&str]) -> Res<()> {
             close_tab(&w, n.ok_or(tr().which_tab)?)
         }
         ["window"] => window::run(),
+        ["tmux", rest @ ..] => std::process::exit(mux::cli(rest)),
+        ["mux-server", path] => mux::serve(path),
         ["tab", "click", range] => click_tab(range),
         ["tab", "next"] => step_tab(true),
         ["tab", "prev"] => step_tab(false),

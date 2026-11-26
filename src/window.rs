@@ -458,12 +458,12 @@ enum Spot {
 pub fn run() -> Res<()> {
     // in a pane of orcux it would draw itself, and resize its own window, without end
     // (TMUX_PANE means something only with TMUX: it is a pane of that server)
-    if env::var("TMUX").is_ok() && let Ok(me) = env::var("TMUX_PANE") && let Ok(s) = tmux(&["display-message", "-p", "-t", &me, "#{session_name}"]) && (s == UI_NAME || s == BG) {
+    if crate::mux::inside() && let Ok(me) = env::var("TMUX_PANE") && let Ok(s) = tmux(&["display-message", "-p", "-t", &me, "#{session_name}"]) && (s == UI_NAME || s == BG) {
         return Err(tr().window_inside.into());
     }
     ensure_ui()?;
     let (tx, rx) = mpsc::channel();
-    let mut child = Command::new("tmux").args(["-u", "-C", "attach-session", "-t", UI, "-f", "pause-after=2"])
+    let mut child = crate::mux::tmux_command().args(["-u", "-C", "attach-session", "-t", UI, "-f", "pause-after=2"])
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| e.to_string())?;
     let (Some(stdin), Some(out)) = (child.stdin.take(), child.stdout.take()) else { return Err(tr().no_pane.into()) };
     let mut link = Link { child, stdin };
