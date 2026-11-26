@@ -77,10 +77,11 @@ setup = npm ci
 link = node_modules
 port DB_PORT = 1
 env DATABASE_URL = postgres://localhost:${DB_PORT}/${ORCUX_NAME}
+compose = docker-compose.yml
 teardown = docker compose down -v
 ```
 
-`setup` runs in the terminal of every new worktree, `teardown` before one is deleted, `link` shares a folder of the main checkout, `port` names one of its 100 ports and `env` adds variables. It can run commands, so nothing in it is used until you read and approve it with `orcux trust`, and again whenever it changes. `orcux ports` lists the ports and which are in use.
+`setup` runs in the terminal of every new worktree, `teardown` before one is deleted, `link` shares a folder of the main checkout, `port` names one of its 100 ports and `env` adds variables. `compose` lets several worktrees run the same Docker Compose file at once: each one publishes its ports on its own block (from `ORCUX_PORT` + 50, so 5432 becomes 10150 in one and 10250 in the next), through an override that `COMPOSE_FILE` names, so plain `docker compose up` works in its terminals; `PORT_<SERVICE>_<PORT>` tells where each one went (`${PORT_DB_5432}` in an `env` line). It needs Compose 2.24 or later. It can run commands, so nothing in it is used until you read and approve it with `orcux trust`, and again whenever it changes. `orcux ports` lists the ports and which are in use.
 
 ## Ports
 

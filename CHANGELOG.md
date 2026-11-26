@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `compose = docker-compose.yml` in `.orcux`: several worktrees run the same Docker Compose file at once, each on ports of its own.
+
 ## 0.3.0
 
 - Homebrew: `brew trust --formula borjamrd/tap/orcux && brew install borjamrd/tap/orcux`.

@@ -1,4 +1,5 @@
 mod agent;
+mod compose;
 mod config;
 mod files;
 mod control;
@@ -121,8 +122,12 @@ impl Wt {
             format!("COMPOSE_PROJECT_NAME={compose}"),
             format!("ORCUX_NAME={}", compose.replace('-', "_")), // for names of databases
         ];
-        let known: Vec<(String, String)> = all.iter().filter_map(|e| e.split_once('=')).map(|(k, v)| (k.into(), v.into())).collect();
-        all.extend(config::variables(&config::trusted(&self.repo), self.port(), &known).iter().map(|(k, v)| format!("{k}={v}")));
+        let mut known: Vec<(String, String)> = all.iter().filter_map(|e| e.split_once('=')).map(|(k, v)| (k.into(), v.into())).collect();
+        let config = config::trusted(&self.repo);
+        let compose = compose::env(self, &config.compose, &known);
+        all.extend(compose.iter().map(|(k, v)| format!("{k}={v}")));
+        known.extend(compose);
+        all.extend(config::variables(&config, self.port(), &known).iter().map(|(k, v)| format!("{k}={v}")));
         if let Some(dir) = agent::plugin() {
             let (dir, others) = (dir.display().to_string(), env::var(PLUGINS).unwrap_or_default());
             let others: Vec<&str> = others.split(':').filter(|d| !d.is_empty() && *d != dir).collect();
