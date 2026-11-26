@@ -1146,6 +1146,66 @@ pub fn switch() -> Res<()> {
     })
 }
 
+/// What waits for the person (`work::waiting`), the one that waits longest first: Enter goes to that agent, or opens
+/// that pull request. Opt+r again closes it.
+pub fn inbox() -> Res<()> {
+    use work::Wait;
+    let (all, now) = (work::waiting(), prs::now());
+    let (mut sel, mut err, mut view) = (0usize, String::new(), None::<String>);
+    dialog(|term| loop {
+        term.draw(|f| {
+            let [list, foot] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(f.area());
+            let w = f.area().width;
+            let mut items = vec![];
+            for (i, item) in all.iter().enumerate() {
+                let line = match item {
+                    Wait::Agent(p) => {
+                        let (g, c) = look(p.look());
+                        let (what, since) = p.agent.map_or((String::new(), String::new()), |(a, at)| (a.text().to_string(), prs::ago(now.saturating_sub(at))));
+                        let left = vec![" ".into(), fg(g, c), " ".into(), p.wt.clone().bold().fg(FOAM), fg(format!(":{} {}", p.tab, program(&p.cmd)), MUTED), fg(format!("  {what}"), c)];
+                        lr(w, left, vec![fg(format!("{since} "), MUTED)])
+                    }
+                    Wait::Pr(p) => {
+                        let (_, s, t) = p.status();
+                        let (g, c) = look(s);
+                        let left = vec![" ".into(), fg(g, c), " ".into(), fg(format!("#{} ", p.number), MUTED), p.title.clone().bold().fg(FOAM)];
+                        lr(w, left, vec![fg(format!("  {t}  {} ", p.repo_name()), MUTED)])
+                    }
+                };
+                items.push((vec![line], i == sel));
+            }
+            if all.is_empty() {
+                items.push((vec![Line::from(fg(format!(" {}", tr().nobody_waits), MUTED))], false));
+            }
+            blocks(f, list, items, true);
+            if err.is_empty() {
+                f.render_widget(keys(&[("↑/↓", tr().k_move), ("⏎", tr().k_view), ("esc", tr().k_close)]), foot);
+            } else {
+                f.render_widget(Line::from(fg(format!(" {err}"), CORAL)), foot);
+            }
+        }).map_err(|e| e.to_string())?;
+        match key()? {
+            Some(KeyCode::Esc | KeyCode::Char('®')) => return Ok(()),
+            Some(KeyCode::Down | KeyCode::Char('j')) => sel = (sel + 1).min(all.len().saturating_sub(1)),
+            Some(KeyCode::Up | KeyCode::Char('k')) => sel = sel.saturating_sub(1),
+            Some(KeyCode::Enter) => match all.get(sel) {
+                Some(Wait::Agent(p)) => match find(Some(&p.wt)).and_then(|w| show_tab(&w, Some(p.tab))) {
+                    Ok(()) => return Ok(()),
+                    Err(e) => err = short(&e),
+                },
+                Some(Wait::Pr(p)) => {
+                    view = Some(p.url.clone());
+                    return Ok(());
+                }
+                None => return Ok(()),
+            },
+            _ => {}
+        }
+    })?;
+    // the pull request in its own dialog, in this same popup
+    view.map_or(Ok(()), |url| dialog_view(&url))
+}
+
 // ---------- rail: the right pane with the pull requests (`orcux rail`) ----------
 
 fn pr_lines<'a>(p: &Pr, age: u64, w: u16) -> Vec<Line<'a>> {

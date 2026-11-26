@@ -52,6 +52,7 @@ pub struct Text {
     pub title_pr: &'static str,
     pub title_close: &'static str,
     pub title_switch: &'static str,
+    pub title_inbox: &'static str,
     pub skill_installed: fn(&str) -> String,
     pub skill_failed: fn(&str) -> String,
     pub doc_skill: &'static str,

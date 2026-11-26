@@ -259,19 +259,34 @@ fn foremost_at_work<'a>(tabs: impl Iterator<Item = &'a Pane>) -> Option<&'a Pane
 }
 
 /// Shows the terminal that waits for the person since longer ago; else one that failed, or is done.
-pub fn next() -> Res<()> {
+/// Something that waits for the person.
+pub enum Wait {
+    Agent(Pane),
+    Pr(prs::Pr),
+}
+
+/// What waits for the person, besides the terminal in front of them: agents that ask, then those that failed, then
+/// those that are done, each the one that waits longest first; then the pull requests that are theirs to move.
+pub fn waiting() -> Vec<Wait> {
     let here = terminal_pane().map(|p| p.0);
-    let mut all: Vec<Pane> = panes().into_iter().filter(|p| Some(&p.pane) != here.as_ref()).collect();
     let rank = |p: &Pane| match p.look() {
         prs::State::Asking => 0,
         prs::State::Broken => 1,
         prs::State::Finished => 2,
         _ => 9,
     };
-    all.sort_by_key(|p| (rank(p), p.agent.map_or(0, |a| a.1)));
-    match all.first().filter(|p| rank(p) < 9) {
-        Some(p) => show_tab(&find(Some(&p.wt))?, Some(p.tab)),
-        None => Err(tr().nobody_waits.into()),
+    let mut agents: Vec<Pane> = panes().into_iter().filter(|p| Some(&p.pane) != here.as_ref() && rank(p) < 9).collect();
+    agents.sort_by_key(|p| (rank(p), p.agent.map_or(0, |a| a.1)));
+    let prs = prs::cached().prs.into_iter().filter(|p| p.status().0 == prs::Group::Yours);
+    agents.into_iter().map(Wait::Agent).chain(prs.map(Wait::Pr)).collect()
+}
+
+/// Opt+r: straight to the agent that waits, if it is the only thing; with more, the list of them.
+pub fn next() -> Res<()> {
+    match waiting().as_slice() {
+        [] => Err(tr().nobody_waits.into()),
+        [Wait::Agent(p)] => show_tab(&find(Some(&p.wt))?, Some(p.tab)),
+        all => popup(tr().title_inbox, (100, (all.len() as u32 + 4).clamp(8, 24)), &["inbox"]),
     }
 }
 

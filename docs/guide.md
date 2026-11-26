@@ -13,7 +13,7 @@ Everything beyond the [README](../README.md). `orcux help` and `Opt+o` list ever
 | `e` | rename the selected worktree |
 | `Opt+↑` / `Opt+↓`, `K` / `J` | move the selected worktree, repo or folder |
 | `Opt+w` | switch worktree, by name or pull request |
-| `Opt+r` | go to the agent that waits for you |
+| `Opt+r` | what waits for you: with one agent, straight to it; with more, or with pull requests of yours, the list (oldest first) |
 | `Opt+t`, `Opt+a`, `Opt+d`, `Opt+q` | new, previous, next and close tab |
 | `Opt+o` | every command and key (`?` in the sidebar) |
 | `tab` | go to the pull requests |
