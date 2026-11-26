@@ -56,9 +56,8 @@ pub struct Text {
     pub hint_new: &'static str,
     pub hint_add: &'static str,
     pub hint_pr: &'static str,
-    pub hint_unregister: &'static str,
-    pub hint_rm: &'static str,
     pub hint_force: &'static str,
+    pub hint_force_key: &'static str,
     pub hint_any: &'static str,
     pub hint_scroll: &'static str,
     pub hint_close: &'static str,
@@ -220,7 +219,6 @@ pub struct Text {
     pub merge_done: fn(&str) -> String,
     pub merge_usage: &'static str,
     pub title_merge: &'static str,
-    pub hint_merge: &'static str,
     pub conflicts_none: &'static str,
     pub restored: fn(usize) -> String,
     pub restore_offer: fn(usize) -> String,
@@ -330,8 +328,8 @@ mod tests {
             ] {
                 assert!(keys(&k) <= 44, "{lang}: rail {k:?}");
             }
-            assert!(width(t.k_yes) + width(t.k_no) + width(t.hint_choose) + 8 <= 60, "{lang}: choice");
-            for s in [t.hint_new, t.hint_pr, t.hint_unregister, t.hint_rm, t.hint_force, t.hint_any, t.kept_rm, t.kept_unregister, t.kept_close, t.kept_repo, t.hint_add, t.fetching] {
+            assert!(width(t.k_yes) + width(t.k_no) + width(t.hint_choose) + width(t.hint_force_key) + 10 <= 60, "{lang}: choice");
+            for s in [t.hint_new, t.hint_pr, t.hint_force, t.hint_any, t.kept_rm, t.kept_unregister, t.kept_close, t.kept_repo, t.hint_add, t.fetching] {
                 assert!(width(s) <= 60, "{lang}: {s}");
             }
             for s in [t.label_repo, t.label_parent, t.label_name, t.label_branch, t.label_port] {

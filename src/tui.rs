@@ -1846,7 +1846,7 @@ fn draw_dialog(term: &mut ratatui::DefaultTerminal, lines: Vec<Line>, hint: &str
 
 /// A dialog that asks yes or no, with one of them already chosen: Enter takes it, y and n answer, arrows change it,
 /// any other key is no.
-fn draw_choice(term: &mut ratatui::DefaultTerminal, lines: Vec<Line>, yes: bool) -> Res<()> {
+fn draw_choice(term: &mut ratatui::DefaultTerminal, lines: Vec<Line>, yes: bool, extra: &str) -> Res<()> {
     term.draw(|f| {
         let area = f.area().inner(Margin::new(1, 0));
         let [body, foot] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
@@ -1855,7 +1855,10 @@ fn draw_choice(term: &mut ratatui::DefaultTerminal, lines: Vec<Line>, yes: bool)
             let s = format!(" {text} ");
             if on { s.bold().fg(HULL).bg(FOAM) } else { s.fg(MUTED).bg(WAKE) }
         };
-        let hint = vec![button(tr().k_yes, yes), " ".into(), button(tr().k_no, !yes), fg(format!("   {}", tr().hint_choose), MUTED)];
+        let mut hint = vec![button(tr().k_yes, yes), " ".into(), button(tr().k_no, !yes), fg(format!("   {}", tr().hint_choose), MUTED)];
+        if !extra.is_empty() {
+            hint.push(fg(format!("  {extra}"), MUTED));
+        }
         f.render_widget(Line::from(hint), foot);
     }).map(|_| ()).map_err(|e| e.to_string())
 }
@@ -1988,7 +1991,7 @@ pub fn dialog_add(base: &Path) -> Res<()> {
 
 pub fn dialog_rm_repo(repo: &Path) -> Res<()> {
     dialog(|term| {
-        let mut err = String::new();
+        let (mut err, mut yes) = (String::new(), false);
         loop {
             let (ask, name) = (tr().ask_unregister, repo.file_name().unwrap_or_default().to_string_lossy().to_string());
             let lines = vec![
@@ -1997,14 +2000,18 @@ pub fn dialog_rm_repo(repo: &Path) -> Res<()> {
                 Line::default(),
                 Line::from(err.clone()).fg(CORAL),
             ];
-            draw_dialog(term, lines, tr().hint_unregister)?;
-            match key()? {
+            if !err.is_empty() {
+                draw_dialog(term, lines, tr().hint_any)?;
+                if key()?.is_some() {
+                    return Ok(());
+                }
+                continue;
+            }
+            draw_choice(term, lines, yes, "")?;
+            match key()?.and_then(|k| chosen(k, &mut yes)) {
                 None => {}
-                Some(KeyCode::Char('y')) if err.is_empty() => match remove_repo(repo) {
-                    Ok(()) => return Ok(()),
-                    Err(e) => err = e,
-                },
-                Some(_) => return Ok(()),
+                Some(true) => if let Err(e) = remove_repo(repo) { err = e } else { return Ok(()) },
+                Some(false) => return Ok(()),
             }
         }
     })
@@ -2045,7 +2052,8 @@ fn create_view(term: &mut ratatui::DefaultTerminal, repo: &Path, branch: &str, l
 
 pub fn dialog_rm(w: &Wt) -> Res<()> {
     dialog(|term| {
-        let mut err = String::new();
+        // deleting starts on "no": Enter by mistake must not take a worktree away
+        let (mut err, mut yes) = (String::new(), false);
         loop {
             let (ask, kept) = if w.at.is_some() {
                 (tr().ask_unregister, tr().kept_unregister)
@@ -2058,13 +2066,25 @@ pub fn dialog_rm(w: &Wt) -> Res<()> {
                 Line::default(),
                 status,
             ];
-            let hint = if w.at.is_some() { tr().hint_unregister } else if err.is_empty() { tr().hint_rm } else { tr().hint_force };
-            draw_dialog(term, lines(Line::from(err.clone()).fg(CORAL)), hint)?;
-            let force = match key()? {
-                None => continue,
-                Some(KeyCode::Char('y')) if err.is_empty() => false,
-                Some(KeyCode::Char('D')) if w.at.is_none() => true,
-                Some(_) => return Ok(()),
+            let force = if err.is_empty() {
+                draw_choice(term, lines(Line::default()), yes, if w.at.is_some() { "" } else { tr().hint_force_key })?;
+                match key()? {
+                    None => continue,
+                    Some(KeyCode::Char('D')) if w.at.is_none() => true,
+                    Some(k) => match chosen(k, &mut yes) {
+                        None => continue,
+                        Some(true) => false,
+                        Some(false) => return Ok(()),
+                    },
+                }
+            } else {
+                // git said no (changes, say): only forcing is left
+                draw_dialog(term, lines(Line::from(err.clone()).fg(CORAL)), tr().hint_force)?;
+                match key()? {
+                    None => continue,
+                    Some(KeyCode::Char('D')) if w.at.is_none() => true,
+                    Some(_) => return Ok(()),
+                }
             };
             draw_dialog(term, lines(Line::from(tr().deleting).fg(CURRENT)), "")?;
             match remove(w, force) {
@@ -2079,7 +2099,7 @@ pub fn dialog_rm(w: &Wt) -> Res<()> {
 pub fn dialog_merge(w: &Wt) -> Res<()> {
     dialog(|term| {
         draw_dialog(term, vec![Line::from(tr().loading).fg(MUTED)], "")?;
-        let mut err = String::new();
+        let (mut err, mut yes) = (String::new(), false);
         let plan = merge::plan(w, None, false);
         let others = merge::with_others(w).unwrap_or_default();
         loop {
@@ -2102,14 +2122,18 @@ pub fn dialog_merge(w: &Wt) -> Res<()> {
                 lines.push(Line::from((tr().merge_others)(other, &files.join(", "))).fg(SIGNAL));
             }
             lines.extend([Line::default(), Line::from(err.clone()).fg(CORAL)]);
-            draw_dialog(term, lines, if ready && err.is_empty() { tr().hint_merge } else { tr().hint_any })?;
-            match (key()?, &plan) {
-                (None, _) => {}
-                (Some(KeyCode::Char('y')), Ok(p)) if ready && err.is_empty() => match merge::run_plan(w, p) {
-                    Ok(()) => return Ok(()),
-                    Err(e) => err = short(&e),
-                },
-                _ => return Ok(()),
+            let (Ok(p), true) = (&plan, ready && err.is_empty()) else {
+                draw_dialog(term, lines, tr().hint_any)?;
+                if key()?.is_some() {
+                    return Ok(());
+                }
+                continue;
+            };
+            draw_choice(term, lines, yes, "")?;
+            match key()?.and_then(|k| chosen(k, &mut yes)) {
+                None => {}
+                Some(true) => if let Err(e) = merge::run_plan(w, p) { err = short(&e) } else { return Ok(()) },
+                Some(false) => return Ok(()),
             }
         }
     })
@@ -2129,7 +2153,7 @@ pub fn dialog_close() -> Res<()> {
                 Line::default(),
                 Line::from(err.clone()).fg(CORAL),
             ];
-            draw_choice(term, lines, yes)?;
+            draw_choice(term, lines, yes, "")?;
             match key()?.and_then(|k| chosen(k, &mut yes)) {
                 None => {}
                 Some(true) => match close_tab(&w, n) {
