@@ -36,6 +36,16 @@ Everything beyond the [README](../README.md). `orcux help` and `Opt+o` list ever
 
 orcux keeps the terminals alive in a small server of its own: close orcux, or lose the connection, and come back to them. If you already used orcux with tmux, it goes on with tmux; `orcux engine own` or `orcux engine tmux` changes it. With tmux there is also the classic interface, drawn by tmux: `orcux ui classic`.
 
+On a Mac the server starts as a service of macOS, so that the terminals outlive the app that opened orcux. So when a program in one of them asks for something macOS guards (your photos, contacts, the camera…), the question comes in the name of orcux, as it would come in the name of your terminal app without orcux. orcux itself asks for none of that: answer as you would for that program. What you allowed or not is under System Settings › Privacy & Security, as orcux.
+
+## On another machine
+
+```sh
+orcux ssh my-server        # as for ssh: a host, user@host or an alias of ~/.ssh/config
+```
+
+orcux runs on that machine, in this terminal: its worktrees, agents and ports are there. Close the connection, or lose it, and they go on; the same command comes back to them. If orcux is not there yet, it offers to install it with its install script. Over SSH a click on a web address copies it to this computer's clipboard instead of opening a browser on the other one.
+
 ## For agents and scripts
 
 ```sh
@@ -77,10 +87,11 @@ setup = npm ci
 link = node_modules
 port DB_PORT = 1
 env DATABASE_URL = postgres://localhost:${DB_PORT}/${ORCUX_NAME}
+compose = docker-compose.yml
 teardown = docker compose down -v
 ```
 
-`setup` runs in the terminal of every new worktree, `teardown` before one is deleted, `link` shares a folder of the main checkout, `port` names one of its 100 ports and `env` adds variables. It can run commands, so nothing in it is used until you read and approve it with `orcux trust`, and again whenever it changes. `orcux ports` lists the ports and which are in use.
+`setup` runs in the terminal of every new worktree, `teardown` before one is deleted, `link` shares a folder of the main checkout, `port` names one of its 100 ports and `env` adds variables. `compose` lets several worktrees run the same Docker Compose file at once: each one publishes its ports on its own block (from `ORCUX_PORT` + 50, so 5432 becomes 10150 in one and 10250 in the next), through an override that `COMPOSE_FILE` names, so plain `docker compose up` works in its terminals; `PORT_<SERVICE>_<PORT>` tells where each one went (`${PORT_DB_5432}` in an `env` line). It needs Compose 2.24 or later. It can run commands, so nothing in it is used until you read and approve it with `orcux trust`, and again whenever it changes. `orcux ports` lists the ports and which are in use.
 
 ## Ports
 
@@ -92,7 +103,7 @@ Worktrees share your computer, so two servers on port 3000 collide. Each termina
 | `ORCUX_SLOT`, `ORCUX_ID` | the number and the name of the worktree |
 | `COMPOSE_PROJECT_NAME` | so that Docker Compose keeps them apart |
 
-Use them in your scripts: `vite --port $ORCUX_PORT`. Files that git ignores and you need in every worktree, such as `.env`, go in a `.worktreeinclude`.
+Use them in your scripts: `vite --port $ORCUX_PORT`. Files that git ignores and you need in every worktree, such as `.env`, go in a `.worktreeinclude`: paths, or patterns as in `.gitignore` (`*.env`, `config/**/local.*`, `!keep.env`), copied when the worktree is made.
 
 ## Bringing work back
 

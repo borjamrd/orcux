@@ -18,6 +18,8 @@ pub struct Config {
     /// name of a variable, and which of the ports of the worktree it is
     pub ports: Vec<(String, u32)>,
     pub env: Vec<(String, String)>,
+    /// Compose files of the repo, whose ports each worktree publishes on its own (`compose.rs`)
+    pub compose: Vec<String>,
 }
 
 pub enum Trust {
@@ -53,6 +55,10 @@ pub fn parse(text: &str) -> Res<Config> {
                 c.ports.push((name.into(), n));
             }
             (Some("env"), Some(name), None) if is_name(name) => c.env.push((name.into(), value)),
+            (Some("compose"), None, _) => {
+                let inside = !value.is_empty() && Path::new(&value).components().all(|p| matches!(p, std::path::Component::Normal(_)));
+                c.compose.push(if inside { value } else { return Err(bad()) });
+            }
             _ => return Err(bad()),
         }
     }

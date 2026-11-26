@@ -1334,6 +1334,8 @@ pub fn first_steps() -> Option<Vec<(bool, &'static str, String)>> {
 pub fn welcome() -> Res<()> {
     let mut term = ratatui::init();
     let (mut wakes, binary, mut draw) = (Wakes::start(), Binary::now(), true);
+    // the first steps change with files, not with tmux: while they are shown, they are looked at on each tick
+    let mut steps_shown = false;
     let res = loop {
         if wakes.tick() && binary.replaced() {
             ratatui::restore();
@@ -1346,7 +1348,7 @@ pub fn welcome() -> Res<()> {
                     false
                 }
                 Some(Wake::Tmux | Wake::Resize) => true,
-                _ => !control::connected(),
+                _ => !control::connected() || (steps_shown && first_steps().is_none()),
             };
             continue;
         }
@@ -1374,6 +1376,7 @@ pub fn welcome() -> Res<()> {
                 lines.push(Line::default());
             }
             let steps = first_steps();
+            steps_shown = steps.is_some();
             let mut list = vec![];
             if let Some(steps) = &steps {
                 // the first time: what to do, step by step, each with its key; left-aligned in a centered block

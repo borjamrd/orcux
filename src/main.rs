@@ -1,4 +1,5 @@
 mod agent;
+mod compose;
 mod config;
 mod files;
 mod control;
@@ -121,8 +122,12 @@ impl Wt {
             format!("COMPOSE_PROJECT_NAME={compose}"),
             format!("ORCUX_NAME={}", compose.replace('-', "_")), // for names of databases
         ];
-        let known: Vec<(String, String)> = all.iter().filter_map(|e| e.split_once('=')).map(|(k, v)| (k.into(), v.into())).collect();
-        all.extend(config::variables(&config::trusted(&self.repo), self.port(), &known).iter().map(|(k, v)| format!("{k}={v}")));
+        let mut known: Vec<(String, String)> = all.iter().filter_map(|e| e.split_once('=')).map(|(k, v)| (k.into(), v.into())).collect();
+        let config = config::trusted(&self.repo);
+        let compose = compose::env(self, &config.compose, &known);
+        all.extend(compose.iter().map(|(k, v)| format!("{k}={v}")));
+        known.extend(compose);
+        all.extend(config::variables(&config, self.port(), &known).iter().map(|(k, v)| format!("{k}={v}")));
         if let Some(dir) = agent::plugin() {
             let (dir, others) = (dir.display().to_string(), env::var(PLUGINS).unwrap_or_default());
             let others: Vec<&str> = others.split(':').filter(|d| !d.is_empty() && *d != dir).collect();
@@ -586,17 +591,31 @@ fn remove_worktree(repo: &Path, args: &[&str]) -> Res<()> {
     }
 }
 
-/// Copies the local-only files listed in the main checkout's .worktreeinclude.
-// ponytail: literal paths only (files or dirs); glob lines are skipped. Add `git ls-files -oi` if globs are needed.
+/// Copies the local-only files listed in the main checkout's .worktreeinclude: paths, and patterns as in
+/// .gitignore (`*.env`, `config/**/local.*`, `!keep`), matched by git among the files it does not track.
 fn copy_includes(repo: &Path, dst: &Path) -> Res<()> {
     let Ok(list) = fs::read_to_string(repo.join(".worktreeinclude")) else { return Ok(()) };
-    for l in list.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
-        let rel = l.trim_start_matches('/').trim_end_matches('/');
-        let src = repo.join(rel);
-        if rel.contains(['*', '?', '[']) || !src.exists() {
+    let lines: Vec<&str> = list.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
+    let mut found: Vec<String> = lines.iter().filter(|l| !l.contains(['*', '?', '[', '!']))
+        .map(|l| l.trim_start_matches('/').trim_end_matches('/').to_string()).collect();
+    if lines.iter().any(|l| l.contains(['*', '?', '['])) {
+        // a folder that matches is one entry (--directory): node_modules is copied whole, not listed file by file
+        let file = repo.join(".worktreeinclude");
+        let out = git(repo, &["ls-files", "-z", "--others", "--ignored", "--directory", "--exclude-from", &file.to_string_lossy()])?;
+        found.extend(out.split('\0').filter(|p| !p.is_empty()).map(|p| p.trim_end_matches('/').to_string()));
+    }
+    found.sort();
+    found.dedup();
+    for rel in found {
+        let src = repo.join(&rel);
+        // inside the repo, and not a path that climbs out of it
+        if !src.exists() || Path::new(&rel).components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
             continue;
         }
-        let to = dst.join(rel);
+        let to = dst.join(&rel);
+        if to.exists() {
+            continue;
+        }
         fs::create_dir_all(to.parent().unwrap()).map_err(|e| e.to_string())?;
         run("cp", &["-R", src.to_str().unwrap(), to.to_str().unwrap()], None)?;
     }
@@ -1142,8 +1161,51 @@ pub fn style_ui() -> Res<()> {
 }
 
 pub fn open_url(url: &str) -> Res<()> {
+    // over SSH the browser would open on the other machine, where nobody looks
+    if over_ssh() {
+        return Err((tr().url_over_ssh)(url));
+    }
     run(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }, &[url], None).map(|_| ())
 }
+
+/// This runs on a machine reached through SSH.
+pub fn over_ssh() -> bool {
+    ["SSH_CONNECTION", "SSH_TTY"].iter().any(|k| env::var(k).is_ok_and(|v| !v.is_empty()))
+}
+
+/// `orcux ssh <target>`: orcux on another machine, in this terminal. Its terminals stay there when the connection
+/// drops; the same command comes back to them. If orcux is not there, it offers to install it, after a yes.
+fn ssh(target: &str, rest: &[&str]) -> Res<()> {
+    if target.starts_with('-') {
+        return Err(tr().ssh_usage.into());
+    }
+    // a login shell: ~/.local/bin is in its PATH, as in a terminal of that machine
+    let open = |args: &[&str]| -> Res<Option<i32>> {
+        let cmd = format!("exec \"$SHELL\" -lc {}", config::sh(&std::iter::once("orcux").chain(args.iter().copied()).map(config::sh).collect::<Vec<_>>().join(" ")));
+        Command::new("ssh").args(["-t", "--", target, &cmd]).status().map(|s| s.code()).map_err(|e| format!("ssh: {e}"))
+    };
+    match open(rest)? {
+        Some(127) => {}
+        Some(0) | None => return Ok(()),
+        Some(n) => return Err(format!("ssh {target}: {n}")),
+    }
+    print!("{} ", (tr().ssh_install)(target));
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer).map_err(|e| e.to_string())?;
+    if !["y", "s", "yes", "si", "sí"].contains(&answer.trim().to_lowercase().as_str()) {
+        return Ok(());
+    }
+    let install = format!("curl -fsSL {INSTALL} | sh");
+    let ok = Command::new("ssh").args(["-t", "--", target, &install]).status().map_err(|e| format!("ssh: {e}"))?;
+    if !ok.success() {
+        return Err((tr().ssh_install_failed)(target));
+    }
+    open(rest).map(|_| ())
+}
+
+/// The install script, as the README gives it.
+const INSTALL: &str = "https://raw.githubusercontent.com/borjamrd/orcux/master/packaging/install.sh";
 
 pub fn show(w: &Wt) -> Res<()> {
     show_tab(w, None)
@@ -1493,6 +1555,7 @@ fn cli(a: &[&str]) -> Res<()> {
         ["restore", rest @ ..] => restore::cmd(rest),
         ["dialog", "merge", id] => tui::dialog_merge(&find(Some(id))?),
         ["skill", "install"] => agent::install_skill(),
+        ["ssh", target, rest @ ..] => ssh(target, rest),
         ["skill", "remove"] => agent::remove_skill(),
         ["skill"] => {
             print!("{}", agent::SKILL);
