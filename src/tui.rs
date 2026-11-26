@@ -284,10 +284,19 @@ struct Seen {
     moved: Option<u64>,
     /// last activity while hidden
     activity: u64,
+    /// the last time that it changed while visible, once hidden
+    before: u64,
     /// the mark whose dialog was seen on screen
     dialog: u64,
     /// its activity when its screen was last read for `agent::by_screen`; 0: read it again
     read: u64,
+}
+
+/// When a hidden terminal last printed. Since `since` it has a window that was another pane's, and that the swap
+/// itself marks as active: what that window did until then is not its own. Before it prints there, the last time that
+/// it changed while visible counts.
+fn printed(activity: u64, since: u64, before: u64) -> u64 {
+    if activity > since { activity } else { before }
 }
 
 /// An interface is on screen: nothing else may be printed.
@@ -523,7 +532,8 @@ impl App {
             }
             if s.visible != visible {
                 // a hidden terminal tells by its window, and it has just got one with a past of its own
-                *s = Seen { visible, since: now, moved: visible.then_some(s.activity), dialog: s.dialog, ..Seen::default() };
+                let before = if visible { 0 } else { s.moved.unwrap_or(0) };
+                *s = Seen { visible, since: now, moved: visible.then_some(s.activity), dialog: s.dialog, before, ..Seen::default() };
             }
             if !visible {
                 s.activity = p.activity;
@@ -532,7 +542,7 @@ impl App {
             let working = p.agent.is_some_and(|a| a.0 == Agent::Working);
             let quiet = |at: u64| now.saturating_sub(at);
             // how long a hidden one has been still; the visible one is captured, if its agent does not tell what it needs
-            let hidden = quiet(if working { p.activity.max(s.since) } else { p.activity });
+            let hidden = quiet(if working { p.activity.max(s.since) } else { printed(p.activity, s.since, s.before) });
             let moved = !visible && asks.is_some_and(|(_, at)| hidden + 2 < quiet(at));
             let unseen = asks.is_some_and(|(_, at)| s.dialog != at);
             // an agent that only its screen tells about: read when it printed since, and once more after it stopped
@@ -2373,6 +2383,17 @@ pub fn dialog_error(text: &str) -> Res<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hidden_terminal_is_judged_by_its_own_activity() {
+        // the window it got was touched by the swap: not its own
+        assert_eq!(printed(360, 361, 0), 0);
+        assert_eq!(printed(360, 361, 358), 358);
+        // what it printed after
+        assert_eq!(printed(365, 361, 358), 365);
+        // hidden since the sidebar started
+        assert_eq!(printed(360, 0, 0), 360);
+    }
 
     #[test]
     fn an_agent_and_a_pr_look_different() {
