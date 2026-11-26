@@ -278,11 +278,14 @@ fn a_new_language_keeps_the_sidebar() {
     let Some(lab) = ready() else { return };
     lab.orcux(&["new", "alpha"]);
     lab.tmux(&["-L", "outer", "-f", "/dev/null", "new-session", "-d", "-s", "o", "-x", "160", "-y", "40", &format!("env -u TMUX '{ORCUX}'")]);
-    let programs = || lab.tmux(&["list-panes", "-a", "-F", "#{@orcux} #{pane_current_command}"]);
-    until("the interface", || programs().lines().any(|l| l == "__sidebar orcux") && programs().lines().any(|l| l == "__prs orcux"));
+    // what each one draws: a shell in their place would draw a prompt (its program is not a sure sign: on Linux tmux
+    // names the sh that started it)
+    let screen = |mark: &str| {
+        let all = lab.tmux(&["list-panes", "-a", "-F", "#{pane_id} #{@orcux}"]);
+        all.lines().find_map(|l| l.strip_suffix(&format!(" {mark}"))).map(|p| lab.tmux(&["capture-pane", "-p", "-t", p])).unwrap_or_default()
+    };
+    until("the interface", || screen("__sidebar").contains("alpha") && screen("__prs").contains("to review"));
     lab.orcux(&["lang", "es"]);
-    sleep(Duration::from_secs(1));
-    // restarted in the new language, as themselves: not a shell in their place
-    until("the sidebar and the panel again", || programs().lines().any(|l| l == "__sidebar orcux") && programs().lines().any(|l| l == "__prs orcux"));
-    assert!(!programs().lines().any(|l| l.starts_with("__") && !l.ends_with(" orcux")), "{}", programs());
+    // restarted in the new language, as themselves
+    until("the sidebar and the panel again", || screen("__sidebar").contains("alpha") && screen("__prs").contains("por revisar"));
 }
