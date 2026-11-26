@@ -317,9 +317,9 @@ mod tests {
             }
             for k in [
                 vec![("n", t.k_new), ("A", t.k_add), ("d", t.k_delete)],
-                vec![("?", t.k_commands), ("Opt+w", t.k_switch)],
+                vec![("Opt+o", t.k_commands), ("Opt+w", t.k_switch)],
                 vec![("⏎", t.k_diff), ("c", t.k_only_changes)],
-                vec![("esc", t.k_back), ("?", t.k_commands)],
+                vec![("esc", t.k_back), ("Opt+o", t.k_commands)],
             ] {
                 assert!(keys(&k) <= 36, "{lang}: sidebar {k:?}");
             }
