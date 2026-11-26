@@ -36,6 +36,8 @@ Everything beyond the [README](../README.md). `orcux help` and `Opt+o` list ever
 
 orcux keeps the terminals alive in a small server of its own: close orcux, or lose the connection, and come back to them. If you already used orcux with tmux, it goes on with tmux; `orcux engine own` or `orcux engine tmux` changes it. With tmux there is also the classic interface, drawn by tmux: `orcux ui classic`.
 
+On a Mac the server starts as a service of macOS, so that the terminals outlive the app that opened orcux. So when a program in one of them asks for something macOS guards (your photos, contacts, the camera…), the question comes in the name of orcux, as it would come in the name of your terminal app without orcux. orcux itself asks for none of that: answer as you would for that program. What you allowed or not is under System Settings › Privacy & Security, as orcux.
+
 ## For agents and scripts
 
 ```sh
