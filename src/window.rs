@@ -16,7 +16,7 @@ use ratatui::{
     prelude::*,
 };
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     io::{stdout, BufRead, BufReader, Write},
     num::NonZeroU16,
     process::{Child, ChildStdin, Stdio},
@@ -512,9 +512,12 @@ pub fn run() -> Res<()> {
 struct Window {
     screens: HashMap<String, Screen>,
     places: Vec<Place>,
-    /// replies come in the order of the commands: what each one is for
-    waiting: VecDeque<(&'static str, String)>,
-    capture: Vec<Vec<u8>>,
+    /// a marked reply ("B %1", "Y %1 n") announces what the next one is: lines of that pane's screen or history.
+    /// Replies are told apart by these marks, never by their order: tmux may answer for commands we did not send
+    /// (a hook) or not at all.
+    expect: Option<(&'static str, String)>,
+    /// the last screen asked for, and of which pane
+    capture: (String, Vec<Vec<u8>>),
     /// rows above the window: our top row
     top: u16,
     size: (u16, u16),
@@ -529,14 +532,65 @@ struct Window {
 
 impl Window {
     fn new() -> Window {
-        Window { screens: HashMap::new(), places: vec![], waiting: VecDeque::new(), capture: vec![], top: 1, size: (0, 0), spots: vec![], dirty: true, selection: None, me: String::new(), tabs: vec![] }
+        Window { screens: HashMap::new(), places: vec![], expect: None, capture: (String::new(), vec![]), top: 1, size: (0, 0), spots: vec![], dirty: true, selection: None, me: String::new(), tabs: vec![] }
     }
 
     /// The screen of that pane and its cursor at the same moment: one line, so tmux reads nothing in between.
     fn resync(&mut self, link: &mut Link, pane: &str) -> Res<()> {
-        link.send_all(&[&["capture-pane", "-p", "-e", "-N", "-t", pane], &["display-message", "-p", "-t", pane, STATE]])?;
-        self.waiting.extend([("capture", pane.to_string()), ("state", pane.to_string())]);
+        // display-message goes through strftime: a % of its own is written %%
+        let id = pane.replace('%', "%%");
+        let (mark, state) = (format!("B {id}"), format!("S {id} {STATE}"));
+        link.send_all(&[&["display-message", "-p", &mark], &["capture-pane", "-p", "-e", "-N", "-t", pane], &["display-message", "-p", "-t", pane, &state]])?;
         Ok(())
+    }
+
+    /// A reply of tmux: what it is comes from its marks, not from its place in line.
+    fn reply(&mut self, ok: bool, lines: Vec<Vec<u8>>) {
+        if let Some((what, id)) = self.expect.take() {
+            let lines = if ok { lines } else { vec![] };
+            if what == "capture" {
+                self.capture = (id, lines);
+            } else if let Some(s) = self.screens.get_mut(&id) && s.back > 0 {
+                // fewer lines than asked: the top of the history
+                s.history = Some(seeded(s.size.0, s.size.1, &lines, "0 0 0 0"));
+                self.dirty = true;
+            }
+            return;
+        }
+        let [line] = &lines[..] else { return };
+        let line = String::from_utf8_lossy(line).into_owned();
+        let mut w = line.splitn(3, ' ');
+        match (w.next(), w.next(), w.next()) {
+            (Some("B"), Some(id), None) if ok => self.expect = Some(("capture", id.to_string())),
+            (Some("Y"), Some(id), Some(n)) if ok => {
+                if let Some(s) = self.screens.get_mut(id) {
+                    s.lines = n.trim().parse().unwrap_or(s.lines);
+                    s.back = s.back.min(s.lines);
+                    if s.back == 0 {
+                        s.history = None;
+                    }
+                    self.dirty = true;
+                }
+                self.expect = Some(("history", id.to_string()));
+            }
+            (Some("S"), Some(id), Some(state)) if ok && self.capture.0 == id => {
+                if let Some(s) = self.screens.get_mut(id) {
+                    s.parser = Some(seeded(s.size.0, s.size.1, &self.capture.1, state));
+                    s.fresh = true;
+                    s.lines = state.split(' ').nth(13).and_then(|n| n.parse().ok()).unwrap_or(u16::MAX);
+                    self.dirty = true;
+                }
+            }
+            (Some("M"), Some(me), None) if ok => {
+                // the person is this client now, for popups and for "somebody is looking"
+                tmux(&["set-option", "-g", CLIENT, me]).ok();
+                self.me = me.to_string();
+            }
+            (Some("U"), Some(_), _) => {
+                fs::remove_file(&line[2..]).ok();
+            }
+            _ => {}
+        }
     }
 
     /// Where the panes are now; the screens of new or resized ones are asked again.
@@ -569,16 +623,13 @@ impl Window {
             // a control client has no status line: the window gets the whole size, between our top row and the bottom
             // of the frame
             link.send(&["refresh-client", "-C", &format!("{}x{}", area.width.max(10), area.height.saturating_sub(2).max(5))])?;
-            self.waiting.push_back(("", String::new()));
         }
         Ok(())
     }
 
     fn run(&mut self, term: &mut ratatui::DefaultTerminal, link: &mut Link, rx: &mpsc::Receiver<Msg>) -> Res<()> {
-        link.send(&["display-message", "-p", "#{client_name}"])?;
-        self.waiting.push_back(("me", String::new()));
+        link.send(&["display-message", "-p", "M #{client_name}"])?;
         link.send(&["refresh-client", "-B", "orcux-window::#{@orcux_bar}#{session_windows}"])?;
-        self.waiting.push_back(("", String::new()));
         self.fit(link, term.size().map_err(|e| e.to_string())?)?;
         self.relayout(link)?;
         let mut drawn = Instant::now() - Duration::from_secs(1);
@@ -613,47 +664,9 @@ impl Window {
                     }
                     self.dirty = true;
                 }
-                Msg::Reply(ok, lines) => match self.waiting.pop_front() {
-                    Some(("me", _)) if ok => {
-                        let me = lines.first().map(|l| String::from_utf8_lossy(l).into_owned()).unwrap_or_default();
-                        // the person is this client now, for popups and for "somebody is looking"
-                        tmux(&["set-option", "-g", CLIENT, &me]).ok();
-                        self.me = me;
-                    }
-                    Some(("capture", _)) => self.capture = if ok { lines } else { vec![] },
-                    Some(("unlink", path)) => { fs::remove_file(path).ok(); }
-                    Some(("hsize", id)) => {
-                        if let Some(s) = self.screens.get_mut(&id) {
-                            s.lines = lines.first().and_then(|l| String::from_utf8_lossy(l).trim().parse().ok()).unwrap_or(s.lines);
-                            s.back = s.back.min(s.lines);
-                            if s.back == 0 {
-                                s.history = None;
-                            }
-                            self.dirty = true;
-                        }
-                    }
-                    Some(("history", id)) => {
-                        if let Some(s) = self.screens.get_mut(&id) && s.back > 0 {
-                            // fewer lines than asked: the top of the history
-                            let lines = if ok { lines } else { vec![] };
-                            s.history = Some(seeded(s.size.0, s.size.1, &lines, "0 0 0 0"));
-                            self.dirty = true;
-                        }
-                    }
-                    Some(("state", id)) if ok => {
-                        if let Some(s) = self.screens.get_mut(&id) {
-                            let state = lines.first().map(|l| String::from_utf8_lossy(l).into_owned()).unwrap_or_default();
-                            s.parser = Some(seeded(s.size.0, s.size.1, &self.capture, &state));
-                            s.fresh = true;
-                            s.lines = state.split(' ').nth(13).and_then(|n| n.parse().ok()).unwrap_or(u16::MAX);
-                            self.dirty = true;
-                        }
-                    }
-                    _ => {}
-                },
+                Msg::Reply(ok, lines) => self.reply(ok, lines),
                 Msg::Paused(id) => {
                     link.send(&["refresh-client", "-A", &format!("{id}:continue")])?;
-                    self.waiting.push_back(("", String::new()));
                     self.resync(link, &id)?;
                 }
                 Msg::Layout => self.relayout(link)?,
@@ -669,8 +682,8 @@ impl Window {
                         // through a file of this person only: text in a command could end it and start another.
                         // tmux wraps it as the program asked (bracketed paste)
                         let path = file.to_string_lossy().to_string();
-                        link.send_all(&[&["load-buffer", "-b", "orcux-paste", &path], &["paste-buffer", "-p", "-d", "-b", "orcux-paste", "-t", &p]])?;
-                        self.waiting.extend([("unlink", path), ("", String::new())]);
+                        let done = format!("U {}", path.replace('%', "%%"));
+                        link.send_all(&[&["load-buffer", "-b", "orcux-paste", &path], &["paste-buffer", "-p", "-d", "-b", "orcux-paste", "-t", &p], &["display-message", "-p", &done]])?;
                     }
                 }
                 Msg::Input(_) => {}
@@ -705,7 +718,6 @@ impl Window {
         if let Some((literal, key)) = key_name(k) {
             let args: &[&str] = if literal { &["send-keys", "-l", "-t", &target.pane, &key] } else { &["send-keys", "-t", &target.pane, &key] };
             link.send(args)?;
-            self.waiting.push_back(("", String::new()));
         }
         Ok(())
     }
@@ -764,7 +776,6 @@ impl Window {
         // the focus goes where the click is; asked every time, as what we know of it may be a moment old
         if matches!(m.kind, MouseEventKind::Down(_)) && p.popup.is_none() {
             link.send(&["select-pane", "-t", &p.pane])?;
-            self.waiting.push_back(("", String::new()));
         }
         let (pc, pr) = (col - r.x, row - r.y);
         // what the program in the pane asked for, as its own screen says now
@@ -787,7 +798,6 @@ impl Window {
             let mut args = vec!["send-keys", "-H", "-t", &p.pane];
             args.extend(hex.iter().map(String::as_str));
             link.send(&args)?;
-            self.waiting.push_back(("", String::new()));
         }
         Ok(())
     }
@@ -799,7 +809,6 @@ impl Window {
         if s.parser.as_ref().is_some_and(|x| x.screen().alternate_screen()) {
             for _ in 0..3 {
                 link.send(&["send-keys", "-t", &p.pane, if up { "Up" } else { "Down" }])?;
-                self.waiting.push_back(("", String::new()));
             }
             return Ok(());
         }
@@ -811,8 +820,8 @@ impl Window {
         }
         let (h, back) = (i32::from(s.size.0), i32::from(s.back));
         // how much history there is now, with the lines: the wheel stops at its top
-        link.send_all(&[&["display-message", "-p", "-t", &p.pane, "#{history_size}"], &["capture-pane", "-p", "-e", "-N", "-S", &(-back).to_string(), "-E", &(h - 1 - back).to_string(), "-t", &p.pane]])?;
-        self.waiting.extend([("hsize", p.pane.clone()), ("history", p.pane.clone())]);
+        let mark = format!("Y {} #{{history_size}}", p.pane.replace('%', "%%"));
+        link.send_all(&[&["display-message", "-p", "-t", &p.pane, &mark], &["capture-pane", "-p", "-e", "-N", "-S", &(-back).to_string(), "-E", &(h - 1 - back).to_string(), "-t", &p.pane]])?;
         Ok(())
     }
 
@@ -1030,6 +1039,30 @@ mod tests {
         assert_eq!(after_seed(b"hello world"), b"hello world");
         assert_eq!(after_seed(b"12 files\n"), b"12 files\n");
         assert_eq!(after_seed(b"line\nmore\x07"), b"line\nmore\x07");
+    }
+
+    #[test]
+    fn replies_by_their_marks() {
+        let mut w = Window::new();
+        w.screens.insert("%1".into(), Screen { parser: None, size: (3, 10), syncing: None, back: 0, history: None, fresh: false, lines: 0 });
+        let l = |s: &str| s.as_bytes().to_vec();
+        // replies for commands of others (a hook) or without output come in between: they change nothing
+        w.reply(true, vec![]);
+        w.reply(true, vec![l("1 2 0 0 0 0 0 0 0 2 0 0 1 0")]);
+        w.reply(true, vec![l("B %1")]);
+        w.reply(true, vec![l("\x1b[31mred"), l("two")]);
+        w.reply(true, vec![]);
+        w.reply(true, vec![l("S %1 4 1 1 0 0 0 0 0 0 2 0 0 1 50")]);
+        let s = &w.screens["%1"];
+        assert_eq!(s.parser.as_ref().map(|p| p.screen().contents()), Some("red\ntwo".into()));
+        assert_eq!((s.parser.as_ref().map(|p| p.screen().cursor_position()), s.lines), (Some((1, 4)), 50));
+        // the state of another pane never seeds this one with that one's screen
+        w.reply(true, vec![l("S %2 0 0 1 0")]);
+        assert!(!w.screens.contains_key("%2"));
+        // a failed capture is an empty screen, not the next reply
+        w.reply(true, vec![l("B %1")]);
+        w.reply(false, vec![l("can't find pane")]);
+        assert!(w.capture.1.is_empty() && w.expect.is_none());
     }
 
     #[test]
