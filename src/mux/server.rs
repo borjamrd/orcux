@@ -68,6 +68,8 @@ struct Pane {
     height: u16,
     /// what could not be written yet
     pending: Vec<u8>,
+    /// where it started
+    dir: PathBuf,
 }
 
 struct Window {
@@ -125,6 +127,8 @@ pub struct Server {
     looked: Instant,
     /// it had sessions: with none left, it ends, as tmux does
     had: bool,
+    /// something changed since subscriptions were looked at: at rest they are not
+    changed: bool,
 }
 
 fn hex(c: u32) -> String {
@@ -213,6 +217,7 @@ impl format::Scope for Ctx<'_> {
             "pane_current_command" => command_of(pane?),
             "pane_title" => pane?.parser.callbacks().title.clone(),
             "pane_dead" => "0".into(),
+            "pane_current_path" => cwd_of(pane?).display().to_string(),
             "cursor_x" => screen?.cursor_position().1.to_string(),
             "cursor_y" => screen?.cursor_position().0.to_string(),
             "cursor_flag" => b(!screen?.hide_cursor()),
@@ -263,6 +268,18 @@ impl format::Scope for Ctx<'_> {
             _ => vec![],
         }
     }
+}
+
+/// Where what runs in front works now; where it started, if that cannot be known.
+fn cwd_of(p: &Pane) -> PathBuf {
+    let pgid = unsafe { libc::tcgetpgrp(p.master.as_raw_fd()) };
+    let pid = if pgid > 0 { pgid } else { p.pid };
+    #[cfg(not(target_os = "macos"))]
+    if let Ok(d) = std::fs::read_link(format!("/proc/{pid}/cwd")) {
+        return d;
+    }
+    let _ = pid;
+    p.dir.clone()
 }
 
 /// The name of what runs in front in a terminal: the process group that has it.
@@ -330,7 +347,7 @@ impl Server {
         }
         Server {
             socket: socket.into(), started: now(), next: 0, panes: BTreeMap::new(), windows: BTreeMap::new(), sessions: BTreeMap::new(),
-            clients: vec![], globals: Opts::new(), env, buffers: HashMap::new(), looked: Instant::now(), had: false,
+            clients: vec![], globals: Opts::new(), env, buffers: HashMap::new(), looked: Instant::now(), had: false, changed: true,
         }
     }
 
@@ -383,7 +400,7 @@ impl Server {
                 polls.push(libc::pollfd { fd: p.master.as_raw_fd(), events: libc::POLLIN | out, revents: 0 });
             }
             // subscriptions are looked at once a second at most, and only if there are any
-            let subs = self.clients.iter().any(|c| !c.subscriptions.is_empty());
+            let subs = self.changed && self.clients.iter().any(|c| !c.subscriptions.is_empty());
             let timeout = if subs { 1000i32.saturating_sub(self.looked.elapsed().as_millis() as i32).max(0) } else if self.had { -1 } else { 1000 };
             let n = unsafe { libc::poll(polls.as_mut_ptr(), polls.len() as libc::nfds_t, timeout) };
             if n < 0 {
@@ -478,6 +495,7 @@ impl Server {
             return;
         }
         p.parser.process(&got);
+        self.changed = true;
         let replies = std::mem::take(&mut p.parser.callbacks_mut().replies);
         let window = p.window;
         if !replies.is_empty() {
@@ -543,7 +561,9 @@ impl Server {
                 c.inbox.drain(..used);
                 self.request(id, req);
             }
-        } else {
+        }
+        // a control client: its lines, also those that came with its request
+        if self.clients.iter().any(|c| c.id == id && c.session.is_some()) {
             // control mode: one command line at a time
             while let Some(nl) = self.clients.iter().find(|c| c.id == id).and_then(|c| c.inbox.iter().position(|b| *b == b'\n')) {
                 let line = {
@@ -693,7 +713,9 @@ impl Server {
             libc::fcntl(master, libc::F_SETFD, libc::FD_CLOEXEC);
         }
         let master = unsafe { OwnedFd::from_raw_fd(master) };
-        let dir = a.get('c').map(PathBuf::from).filter(|d| d.is_dir()).unwrap_or_else(|| PathBuf::from(self.env.get("HOME").cloned().unwrap_or("/".into())));
+        // tmux expands formats in the folder and the name: "##" is a "#"
+        let plain = |s: &str| format::expand(s, &Ctx { s: self, client: None, session: None, window: None, pane: None });
+        let dir = a.get('c').map(|c| PathBuf::from(plain(c))).filter(|d| d.is_dir()).unwrap_or_else(|| PathBuf::from(self.env.get("HOME").cloned().unwrap_or("/".into())));
         let shell = self.env.get("SHELL").cloned().unwrap_or("/bin/sh".into());
         let line = a.rest.join(" ");
         let mut env = self.env.clone();
@@ -744,7 +766,7 @@ impl Server {
         let child = child.map_err(|e| format!("{}: {e}", if line.is_empty() { shell.clone() } else { line.clone() }))?;
         let nz = |n: u16| std::num::NonZeroU16::new(n).unwrap_or(std::num::NonZeroU16::MIN);
         let parser = vt100::Parser::new_with_callbacks(nz(rows), nz(cols), 2000, Asks::default());
-        self.panes.insert(id, Pane { id, window, pid: child.id() as i32, master, parser, options: Opts::new(), width: cols, height: rows, pending: vec![] });
+        self.panes.insert(id, Pane { id, window, pid: child.id() as i32, master, parser, options: Opts::new(), width: cols, height: rows, pending: vec![], dir });
         std::mem::forget(child); // reaped by SIGCHLD
         Ok(id)
     }
@@ -765,11 +787,16 @@ impl Server {
     fn layout(&mut self, window: u32) {
         let Some(w) = self.windows.get_mut(&window) else { return };
         let gaps = w.panes.len().saturating_sub(1) as u16;
-        let total: u16 = w.widths.iter().sum::<u16>() + gaps;
-        if total != w.size.0 && !w.widths.is_empty() {
-            let widest = (0..w.widths.len()).max_by_key(|i| w.widths[*i]).unwrap_or(0);
-            let other: u16 = w.widths.iter().enumerate().filter(|(i, _)| *i != widest).map(|(_, x)| *x).sum::<u16>() + gaps;
-            w.widths[widest] = w.size.0.saturating_sub(other).max(1);
+        let total: u16 = w.widths.iter().sum::<u16>();
+        let room = w.size.0.saturating_sub(gaps).max(w.widths.len() as u16);
+        if total != room && !w.widths.is_empty() {
+            // in proportion, as tmux does: a hook (window-resized) pins the panes that must not change
+            let mut given = 0u16;
+            let n = w.widths.len();
+            for (i, width) in w.widths.iter_mut().enumerate() {
+                *width = if i + 1 == n { room.saturating_sub(given).max(1) } else { ((*width as u32 * room as u32 + total as u32 / 2) / total.max(1) as u32).max(1) as u16 };
+                given += *width;
+            }
         }
         let (h, list): (u16, Vec<(u32, u16)>) = (w.size.1, w.panes.iter().copied().zip(w.widths.iter().copied()).collect());
         for (p, width) in list {
@@ -881,7 +908,7 @@ impl Server {
     fn new_window(&mut self, session: u32, a: &Args, size: (u16, u16)) -> Result<(u32, u32), String> {
         let wid = self.id();
         let pane = self.spawn(wid, a, size)?;
-        let name = a.get('n').map(String::from).unwrap_or_else(|| "orcux".into());
+        let name = a.get('n').map(|n| format::expand(n, &Ctx { s: self, client: None, session: None, window: None, pane: None })).unwrap_or_else(|| "orcux".into());
         self.windows.insert(wid, Window { id: wid, session, name, panes: vec![pane], widths: vec![size.0], size, active: pane, options: Opts::new(), hooks: HashMap::new(), activity: now() });
         if let Some(s) = self.sessions.get_mut(&session) {
             s.windows.push(wid);
@@ -904,6 +931,12 @@ impl Server {
     /// One command, from a control client or from a single request.
     fn exec(&mut self, words: &[String], client: Option<u32>, caller: Option<&str>) -> Out {
         let Some(name) = words.first() else { return Ok(String::new()) };
+        // what only reads changes nothing that a subscription could show
+        let reads = ["list-panes", "lsp", "list-windows", "lsw", "list-sessions", "ls", "list-clients", "lsc", "display-message", "display",
+            "show-options", "show", "show-option", "capture-pane", "capturep", "has-session", "has"];
+        if !reads.contains(&name.as_str()) {
+            self.changed = true;
+        }
         let rest = &words[1..];
         let target = |s: &Server, a: &Args| s.resolve(a.get('t').unwrap_or(""), client, caller);
         match name.as_str() {
@@ -938,13 +971,20 @@ impl Server {
                 let (wid, at) = (w.ok_or("no window")?, p.ok_or("no pane")?);
                 let win = self.windows.get(&wid).ok_or("no window")?;
                 let i = win.panes.iter().position(|x| *x == at).unwrap_or(0);
-                let old = win.widths[i];
+                let old = if a.has('f') { win.widths.iter().copied().max().unwrap_or(0) } else { win.widths[i] };
                 let want = a.get('l').and_then(|l| l.trim_end_matches('%').parse::<u16>().ok()).unwrap_or(old / 2).min(old.saturating_sub(2)).max(1);
                 let h = win.size.1;
                 let pane = self.spawn(wid, &a, (want, h))?;
                 let win = self.windows.get_mut(&wid).ok_or("no window")?;
-                win.widths[i] = old.saturating_sub(want + 1).max(1);
-                let at_i = if a.has('b') { i } else { i + 1 };
+                // -f: at the edge of the whole window, the room taken from the widest pane
+                let from = if a.has('f') { (0..win.widths.len()).max_by_key(|j| win.widths[*j]).unwrap_or(i) } else { i };
+                win.widths[from] = win.widths[from].saturating_sub(want + 1).max(1);
+                let at_i = match (a.has('f'), a.has('b')) {
+                    (true, true) => 0,
+                    (true, false) => win.panes.len(),
+                    (false, true) => i,
+                    (false, false) => i + 1,
+                };
                 win.panes.insert(at_i, pane);
                 win.widths.insert(at_i, want);
                 if !a.has('d') {
@@ -1187,10 +1227,10 @@ impl Server {
                 let (_, w, p) = target(self, &a)?;
                 let (w, p) = (w.ok_or("no window")?, p.ok_or("no pane")?);
                 if let (Some(win), Some(x)) = (self.windows.get_mut(&w), a.get('x').and_then(|x| x.parse::<u16>().ok())) && let Some(i) = win.panes.iter().position(|q| *q == p) {
-                    let delta = x as i32 - win.widths[i] as i32;
-                    win.widths[i] = x.max(1);
-                    // the widest other pane gives or takes it
-                    if let Some(j) = (0..win.widths.len()).filter(|j| *j != i).max_by_key(|j| win.widths[*j]) {
+                    // the neighbor gives or takes it: the next one, or the one before the last
+                    if let Some(j) = if i + 1 < win.widths.len() { Some(i + 1) } else { i.checked_sub(1) } {
+                        let delta = (x as i32 - win.widths[i] as i32).min(win.widths[j] as i32 - 1);
+                        win.widths[i] = (win.widths[i] as i32 + delta).max(1) as u16;
                         win.widths[j] = (win.widths[j] as i32 - delta).max(1) as u16;
                     }
                 }
@@ -1300,6 +1340,7 @@ impl Server {
     }
 
     fn subscriptions(&mut self) {
+        self.changed = false;
         let mut sends: Vec<(u32, String)> = vec![];
         let ids: Vec<u32> = self.clients.iter().map(|c| c.id).collect();
         for id in ids {
