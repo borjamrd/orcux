@@ -1,3 +1,5 @@
+<picture><source media="(prefers-color-scheme: dark)" srcset="site/logo.svg"><img src="site/logo-light.svg" alt="" width="96"></picture>
+
 <h1>orcux</h1>
 
 Run several coding agents at once, each in a git worktree of its own. Ultra fast, ultra light, in the terminal you already use.
