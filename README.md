@@ -12,7 +12,7 @@ Run several coding agents at once, each in a git worktree of its own. Ultra fast
 - **See who needs you**: working `●`, asking `?`, failed `!`, done `■`. One key takes you there.
 - **Agents go on without you**: close orcux and come back.
 - **Bring the work back**: files and diffs, conflicts, merge, and your pull requests beside it.
-- **Fast and light**: one binary under 2 MB, no tmux needed.
+- **Fast and light**: one binary of about 2 MB, no tmux needed.
 
 | 10 worktrees, a terminal each, at rest | orcux | another TUI (a Rust multiplexer) | another app (Electron) | difference |
 | --- | --- | --- | --- | --- |
