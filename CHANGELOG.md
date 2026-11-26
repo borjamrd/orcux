@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0
+
+- What agents without hooks do, read from their screen: Antigravity, Cursor, Codex and others now tell when they work, ask or need permission. The tabs of `orcux window` show it too.
+- Opt+r: with one agent waiting, straight to it; with more, or with pull requests of yours, a list of what waits for you, oldest first.
+- `P` on a worktree, or `orcux pr`: push its branch and open its pull request, after a yes that starts on no.
+- The diff of a file (`f`, then Enter) is drawn by orcux: comment lines with `c`, and the comments go to the agent of the worktree as one prompt, without sending it.
+- `e` or `orcux rename`: rename a worktree, with its folder and, if it was never pushed, its branch.
+- Opt+↑ / Opt+↓, or K / J: move a worktree, repo or folder in the sidebar.
+- `orcux skill install`: the skill for every agent, not only Claude Code, in `~/.agents/skills`.
+- The sidebar shows the branch of the selected worktree; the README has a line to paste into a coding agent to install orcux, and compares its speed with another TUI and another app.
+- After `orcux lang`, the sidebar and the PR panel come back as themselves.
+
 ## 0.1.0
 
 - orcux keeps the terminals itself: tmux is not needed. Installs that already used tmux go on with it; `orcux engine` changes it.
