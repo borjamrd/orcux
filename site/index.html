@@ -54,13 +54,12 @@ h1 { font: 600 clamp(28px, 4.4vw, 48px)/1.12 var(--mono); letter-spacing: -.02em
 .lead { color: var(--muted); font-size: 19px; margin: 0 0 32px; }
 .install { display: flex; align-items: center; background: var(--hull); border: 1px solid var(--wake); border-radius: 10px; font: 14px var(--mono); }
 .install code { flex: 1; padding: 14px 0 14px 16px; overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
-.install code::before { content: "$ "; color: var(--line); }
+.shell code::before { content: "$ "; color: var(--line); }
+.label { font-size: 14px; color: var(--muted); margin: 0 0 8px; }
+.install + .label { margin-top: 18px; }
 button { font: inherit; color: var(--muted); background: none; border: 0; border-left: 1px solid var(--wake); padding: 14px 16px; cursor: pointer; }
 button:hover { color: var(--foam); }
 .note { color: var(--muted); font-size: 14px; margin: 12px 0 0; }
-details { margin-top: 18px; font-size: 15px; color: var(--muted); }
-summary { cursor: pointer; }
-details pre { white-space: pre-wrap; background: var(--hull); border-radius: 10px; padding: 14px 16px; font-size: 13px; color: var(--foam); }
 
 .demo { background: var(--hull); border: 1px solid var(--wake); border-radius: 14px; padding: 10px; }
 .demo video { display: block; width: 100%; height: auto; border-radius: 8px; }
@@ -109,9 +108,11 @@ footer span { margin-left: auto; }
     <div>
       <h1>Several coding agents at once, each in a worktree of its own.</h1>
       <p class="lead">Ultra fast, ultra light, in the terminal you already use.</p>
-      <div class="install"><code id="cmd">curl -fsSL https://raw.githubusercontent.com/borjamrd/orcux/master/packaging/install.sh | sh</code><button id="copy">Copy</button></div>
+      <p class="label">Ask your coding agent</p>
+      <div class="install"><code>Install orcux from https://github.com/borjamrd/orcux with its install script (curl -fsSL https://raw.githubusercontent.com/borjamrd/orcux/master/packaging/install.sh | sh). Make sure ~/.local/bin is in my PATH, then run orcux doctor and tell me what it reports.</code><button>Copy</button></div>
+      <p class="label">Or do it yourself</p>
+      <div class="install shell"><code>curl -fsSL https://raw.githubusercontent.com/borjamrd/orcux/master/packaging/install.sh | sh</code><button>Copy</button></div>
       <p class="note">macOS and Linux. Needs git; <a href="https://cli.github.com">gh</a> adds your pull requests.</p>
-      <details><summary>Or ask your coding agent</summary><pre>Install orcux from https://github.com/borjamrd/orcux with its install script (curl -fsSL https://raw.githubusercontent.com/borjamrd/orcux/master/packaging/install.sh | sh). Make sure ~/.local/bin is in my PATH, then run orcux doctor and tell me what it reports.</pre></details>
     </div>
   </div>
 
@@ -155,7 +156,8 @@ footer span { margin-left: auto; }
   <a href="https://github.com/borjamrd/orcux/blob/master/docs/guide.md">Guide</a><a href="https://github.com/borjamrd/orcux/blob/master/CHANGELOG.md">Changelog</a><a href="https://github.com/borjamrd/orcux">GitHub</a><span>MIT</span>
 </footer>
 <script>
-copy.onclick = () => navigator.clipboard.writeText(cmd.textContent).then(() => { copy.textContent = "Copied"; setTimeout(() => copy.textContent = "Copy", 1500); });
+for (const b of document.querySelectorAll(".install button"))
+  b.onclick = () => navigator.clipboard.writeText(b.previousElementSibling.textContent).then(() => { b.textContent = "Copied"; setTimeout(() => b.textContent = "Copy", 1500); });
 </script>
 </body>
 </html>
