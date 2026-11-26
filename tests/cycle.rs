@@ -272,3 +272,17 @@ fn terminals_come_back() {
     until("the conversation goes on", || fs::read_to_string(&said).is_ok_and(|t| t == "/tmp/acc|--model m-1 --resume abc-1\n"));
     assert_eq!(says(&any(&lab, &["restore", "--list"])).trim(), "");
 }
+
+#[test]
+fn a_new_language_keeps_the_sidebar() {
+    let Some(lab) = ready() else { return };
+    lab.orcux(&["new", "alpha"]);
+    lab.tmux(&["-L", "outer", "-f", "/dev/null", "new-session", "-d", "-s", "o", "-x", "160", "-y", "40", &format!("env -u TMUX '{ORCUX}'")]);
+    let programs = || lab.tmux(&["list-panes", "-a", "-F", "#{@orcux} #{pane_current_command}"]);
+    until("the interface", || programs().lines().any(|l| l == "__sidebar orcux") && programs().lines().any(|l| l == "__prs orcux"));
+    lab.orcux(&["lang", "es"]);
+    sleep(Duration::from_secs(1));
+    // restarted in the new language, as themselves: not a shell in their place
+    until("the sidebar and the panel again", || programs().lines().any(|l| l == "__sidebar orcux") && programs().lines().any(|l| l == "__prs orcux"));
+    assert!(!programs().lines().any(|l| l.starts_with("__") && !l.ends_with(" orcux")), "{}", programs());
+}

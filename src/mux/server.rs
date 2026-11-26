@@ -75,8 +75,9 @@ struct Pane {
     height: u16,
     /// what could not be written yet
     pending: Vec<u8>,
-    /// where it started
+    /// where it started, and what it runs (nothing: a shell)
     dir: PathBuf,
+    command: Vec<String>,
 }
 
 struct Window {
@@ -785,7 +786,7 @@ impl Server {
         let child = child.map_err(|e| format!("{}: {e}", if line.is_empty() { shell.clone() } else { line.clone() }))?;
         let nz = |n: u16| std::num::NonZeroU16::new(n).unwrap_or(std::num::NonZeroU16::MIN);
         let parser = vt100::Parser::new_with_callbacks(nz(rows), nz(cols), 2000, Asks::default());
-        self.panes.insert(id, Pane { id, window, pid: child.id() as i32, master, parser, options: Opts::new(), width: cols, height: rows, pending: vec![], dir });
+        self.panes.insert(id, Pane { id, window, pid: child.id() as i32, master, parser, options: Opts::new(), width: cols, height: rows, pending: vec![], dir, command: a.rest.clone() });
         std::mem::forget(child); // reaped by SIGCHLD
         Ok(id)
     }
@@ -1341,7 +1342,13 @@ impl Server {
                 let a = Args::parse(rest, "tceE");
                 let (_, w, p) = target(self, &a)?;
                 let (w, p) = (w.ok_or("no window")?, p.ok_or("no pane")?);
-                let (width, height) = self.panes.get(&p).map(|x| (x.width, x.height)).ok_or("no pane")?;
+                let (width, height, command, dir) = self.panes.get(&p).map(|x| (x.width, x.height, x.command.clone(), x.dir.clone())).ok_or("no pane")?;
+                // without a command, the one it had, where it had it: as tmux does
+                let mut a = a;
+                if a.rest.is_empty() {
+                    a.rest = command;
+                }
+                a.values.entry('c').or_insert_with(|| vec![dir.display().to_string()]);
                 let new = self.spawn(w, &a, (width, height))?;
                 if let Some(win) = self.windows.get_mut(&w) {
                     for x in win.panes.iter_mut() { if *x == p { *x = new; } }

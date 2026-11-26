@@ -883,8 +883,12 @@ pub fn sync_rail() -> Res<()> {
 
 /// Restarts the sidebar and the rail, if they are open. Terminals are not touched.
 fn restart_panes() -> Res<()> {
-    for p in [SIDEBAR, RAIL].into_iter().filter_map(ui_pane) {
-        tmux(&["respawn-pane", "-k", "-t", &p])?;
+    let exe = env::current_exe().map_err(|e| e.to_string())?;
+    for (mark, what) in [(SIDEBAR, "sidebar"), (RAIL, "rail")] {
+        if let Some(p) = ui_pane(mark) {
+            // the command too: not every server remembers it
+            tmux(&["respawn-pane", "-k", "-t", &p, &format!("'{}' {what}", exe.display())])?;
+        }
     }
     Ok(())
 }
