@@ -1483,6 +1483,10 @@ fn cli(a: &[&str]) -> Res<()> {
         ["notify", mode] if work::NOTIFY.contains(mode) => work::set_notify(mode),
         ["rail"] => tui::rail(),
         ["welcome"] => tui::welcome(),
+        ["mark", "svg"] => {
+            print!("{}", mark::svg());
+            Ok(())
+        }
         ["prs"] => prs::print(),
         ["doctor"] => doctor::run_all(),
         ["--version" | "-V" | "version"] => {
