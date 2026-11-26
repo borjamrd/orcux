@@ -697,11 +697,14 @@ impl App {
         } else if let Some(s) = self.foremost(&id).map(Pane::look).filter(|s| *s != State::Idle) {
             right.push(fg(format!("{} ", look(s).0), look(s).1));
         }
-        let name = if tabs > 0 || selected { fg(w.name.clone(), FOAM) } else { fg(w.name.clone(), MUTED) };
+        // the one in the terminal: a bar of the accent at the edge and its name in bold, wherever the selection is
+        let shown = id == self.visible;
+        let name = if shown { w.name.clone().bold().fg(FOAM) } else if tabs > 0 || selected { fg(w.name.clone(), FOAM) } else { fg(w.name.clone(), MUTED) };
+        let bar = || if shown { fg("▎", CURRENT) } else { " ".into() };
         let (last, above) = trail.split_last().unwrap_or((&true, &[]));
         let stem: String = above.iter().map(|l| if *l { "    " } else { "│   " }).collect();
-        let branch = format!(" {stem}{}", if *last { "╰── " } else { "├── " });
-        let mut lines = vec![lr(width, vec![fg(branch, LINE), name], right)];
+        let branch = format!("{stem}{}", if *last { "╰── " } else { "├── " });
+        let mut lines = vec![lr(width, vec![bar(), fg(branch, LINE), name], right)];
         if selected {
             let text = match (pr, self.foremost(&id)) {
                 _ if gone => fg(tr().gone, CORAL),
@@ -715,8 +718,8 @@ impl App {
                 (None, Some(p)) if p.busy => fg((tr().working)(program(&p.cmd)), CURRENT),
                 (None, Some(p)) => fg((tr().idle)(program(&p.cmd)), MUTED),
             };
-            let branch = format!(" {stem}{}", if *last { "    " } else { "│   " });
-            lines.push(lr(width, vec![fg(branch, LINE), text], vec![fg(format!(" {} ", w.port()), MUTED)]));
+            let branch = format!("{stem}{}", if *last { "    " } else { "│   " });
+            lines.push(lr(width, vec![bar(), fg(branch, LINE), text], vec![fg(format!(" {} ", w.port()), MUTED)]));
         }
         lines
     }
