@@ -40,9 +40,17 @@ jobs:
         run: cargo test --release --locked --test perf -- --ignored --nocapture
         env:
           ORCUX_PERF_ROOM: 6
+          ORCUX_PERF_SUMMARY: ${{ runner.temp }}/speed.md
       - name: Speed on orcux's own engine
         run: cargo test --release --locked --test perf -- --ignored --nocapture
         env:
           ORCUX_PERF_ROOM: 6
+          ORCUX_PERF_SUMMARY: ${{ runner.temp }}/speed.md
           ORCUX_ENGINE: own
+      - name: The numbers, in the summary of this run
+        if: always()
+        run: |
+          echo "### Speed on $RUNNER_OS (shared CI machine)" >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/speed.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          echo "binary: $(du -k target/release/orcux | cut -f1) KB" >> "$GITHUB_STEP_SUMMARY"
       - run: cargo run --release --locked -- doctor
