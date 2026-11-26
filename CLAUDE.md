@@ -18,7 +18,7 @@ It does not emulate terminals: **ratatui draws the sidebar and tmux runs the ter
 - `docs/demo.gif` is made of real screens of an isolated orcux; before recording, set a neutral prompt: the default one shows the user and the computer.
 - `orcux help`: lists the subcommands. The same table (`commands` in `src/i18n/*.rs`) feeds the sidebar's `?` dialog (`orcux commands` in a tmux popup, 158 by 46, capped to the client: the mark waves beside the list from 149 columns): every new command or shortcut goes there, in every language.
 
-## Architecture (1 dependency: ratatui)
+## Architecture (2 dependencies: ratatui, and vt100 for `orcux window`)
 
 - `src/main.rs`: CLI, git, tmux and state.
 - `src/control.rs`: a lasting connection to tmux (control mode) for the sidebar, the rail and the placeholder. `tmux()` goes through it when there is one; commands that ask many things (`show`, `tab`, `switch`) borrow one; elsewhere, and with an old tmux, it is a process.

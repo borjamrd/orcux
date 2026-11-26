@@ -609,22 +609,32 @@ impl App {
         self.missing || self.live.values().flatten().any(|p| p.busy || asked(p))
     }
 
-    /// What waits and what works, for the foot of the sidebar.
-    fn totals<'a>(&self) -> Line<'a> {
-        let mut s: Vec<Span> = vec![" ".into()];
+    /// What waits and what works, for the foot of the sidebar: each one whole, on the next line if it does not fit.
+    fn totals<'a>(&self, width: usize) -> Vec<Line<'a>> {
+        let mut items: Vec<Span> = vec![];
         let waits = self.wts.iter().filter(|w| self.waits(&w.id())).count();
         if waits > 0 {
-            s.push(fg(format!("{} {}  ", look(State::Asking).0, (tr().agents_wait)(waits)), SIGNAL));
+            items.push(fg(format!("{} {}", look(State::Asking).0, (tr().agents_wait)(waits)), SIGNAL));
         }
         let yours = self.prs.prs.iter().filter(|p| p.status().0 == Group::Yours).count();
         if yours > 0 {
-            s.push(fg(format!("◆ {}  ", (tr().prs_yours)(yours)), SIGNAL));
+            items.push(fg(format!("◆ {}", (tr().prs_yours)(yours)), SIGNAL));
         }
-        s.push(match self.wts.iter().filter(|w| self.working(&w.id())).count() {
+        items.push(match self.wts.iter().filter(|w| self.working(&w.id())).count() {
             0 => fg(format!("○ {}", (tr().n_working)(0)), MUTED),
             n => fg(format!("● {}", (tr().n_working)(n)), CURRENT),
         });
-        Line::from(s)
+        let mut lines: Vec<Line> = vec![];
+        for item in items {
+            match lines.last_mut() {
+                Some(l) if l.width() + 2 + item.width() <= width => {
+                    l.spans.push("  ".into());
+                    l.spans.push(item);
+                }
+                _ => lines.push(Line::from(vec![" ".into(), item])),
+            }
+        }
+        lines
     }
 
     fn selected(&self) -> Option<&Row> {
@@ -731,13 +741,13 @@ impl App {
 
     fn draw(&self, f: &mut Frame) {
         f.render_widget(Block::new().style(Style::new().bg(Color::Reset).fg(FOAM)), f.area()); // the terminal's own ground
-        let sum = self.totals();
-        let lines = if sum.width() < f.area().width as usize { 1 } else { 2 };
+        let sum = self.totals(f.area().width.saturating_sub(1) as usize);
+        let lines = sum.len() as u16;
         let [_, list, _, foot, _, below] = Layout::vertical([
             Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1), Constraint::Length(2), Constraint::Length(1), Constraint::Length(lines),
         ]).areas(f.area());
         let right = f.area().right().saturating_sub(1);
-        f.render_widget(Paragraph::new(sum).wrap(Wrap { trim: true }), Rect { width: below.width.saturating_sub(1), ..below });
+        f.render_widget(Paragraph::new(sum), Rect { width: below.width.saturating_sub(1), ..below });
         let list = Rect { width: list.width.saturating_sub(1), ..list };
         if let Some(v) = &self.files {
             *self.at.borrow_mut() = v.draw(f, Rect { height: list.height + 1, ..list }, foot, self.active);
