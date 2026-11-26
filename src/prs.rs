@@ -317,6 +317,22 @@ pub fn open_pr(w: &Wt, p: &Proposal) -> Res<(String, bool)> {
     Ok((url.lines().last().unwrap_or_default().to_string(), true))
 }
 
+/// git as one gh account: through gh's credential helper, which reads GH_TOKEN. Without a stored token for it, as the
+/// environment says.
+pub fn git_as(login: &str, dir: &Path, args: &[&str]) -> Res<String> {
+    let mut c = Command::new("git");
+    c.args(args).current_dir(dir).env("GIT_TERMINAL_PROMPT", "0").stdin(std::process::Stdio::null());
+    if let Some(t) = token(login).filter(|t| !t.is_empty()) {
+        c.env("GH_TOKEN", t);
+    }
+    let o = c.output().map_err(|e| format!("git: {e}"))?;
+    if o.status.success() {
+        Ok(String::from_utf8_lossy(&o.stdout).trim_end().into())
+    } else {
+        Err(format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim()))
+    }
+}
+
 /// None: the account is only known through the environment.
 fn token(login: &str) -> Option<String> {
     gh(&["auth", "token", "--user", login], Some("")).ok()

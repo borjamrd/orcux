@@ -11,6 +11,7 @@ Everything beyond the [README](../README.md). `orcux help` and `Opt+o` list ever
 | `f` | the files of the selected worktree and their changes; Enter shows a diff, where `c` comments a line and the comments go to its agent on closing, without sending them |
 | `m` | merge the selected worktree and delete it |
 | `e` | rename the selected worktree |
+| `a` | the agent that `orcux run` starts: one that orcux knows, or your own command |
 | `P` | push its branch and open its pull request |
 | `Opt+↑` / `Opt+↓`, `K` / `J` | move the selected worktree, repo or folder |
 | `Opt+w` | switch worktree, by name or pull request |
@@ -26,6 +27,10 @@ Everything beyond the [README](../README.md). `orcux help` and `Opt+o` list ever
 | click on a tab, on `+` | show that tab, open a new one |
 | wheel | the terminal's history; any key goes back |
 | drag | select and copy; with Shift in programs that use the mouse |
+
+## The first time
+
+`orcux` inside a repo adds it as your first project, and the empty screen lists the first steps, each with its key: add a project (`A`), choose your agent (`a`), teach orcux to every agent (`s`), create your first worktree (`n`). Each one is ticked by what is there, and the list goes away with your first worktree, or with `x`.
 
 ## What runs the terminals
 

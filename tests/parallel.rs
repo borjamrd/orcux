@@ -57,7 +57,10 @@ fn nothing_is_lost() {
 
     // some come while others go
     let mix: Vec<Vec<String>> = (0..8).map(|i| if i < 4 { call(&["rm", &name(i), "--force"]) } else { call(&["new", &format!("n{i}")]) }).collect();
-    at_once(&lab, &mix);
+    let out = at_once(&lab, &mix);
+    for o in &out[..4] {
+        assert!(o.status.success(), "rm: {}", String::from_utf8_lossy(&o.stderr));
+    }
     let left: BTreeSet<String> = rows(&lab).iter().map(|r| r[1].clone()).collect();
     assert_eq!(left, ["n4", "n5", "n6", "n7", "same", "w4", "w5", "w6", "w7"].map(String::from).into());
 }

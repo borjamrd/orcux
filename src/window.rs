@@ -243,7 +243,48 @@ fn paint(screen: &vt100::Screen, buf: &mut Buffer, area: Rect, ground: (Color, C
                 b.set_symbol(if cell.has_contents() { cell.contents() } else { " " }).set_style(style);
             }
         }
+        // links look like links: the terminal around cannot see them, the screen is drawn by orcux
+        for (from, to) in urls(&row_chars(screen, r)) {
+            for c in from..to.min(area.width as usize) {
+                if let Some(b) = buf.cell_mut((area.x + c as u16, area.y + r)) {
+                    b.modifier.insert(Modifier::UNDERLINED);
+                }
+            }
+        }
     }
+}
+
+/// A row of a screen, one char per cell (a wide character's second cell is a space), so that an index is a column.
+fn row_chars(screen: &vt100::Screen, r: u16) -> Vec<char> {
+    (0..screen.size().1.get()).map(|c| screen.cell(r, c).and_then(|x| x.contents().chars().next()).unwrap_or(' ')).collect()
+}
+
+/// Where the web addresses of a row are: [from, to) columns, without the punctuation that ends a sentence.
+fn urls(row: &[char]) -> Vec<(usize, usize)> {
+    let text: String = row.iter().collect();
+    let mut out = vec![];
+    let mut at = 0;
+    while let Some(i) = ["http://", "https://"].iter().filter_map(|p| text[at..].find(p)).min() {
+        let from = text[..at + i].chars().count();
+        let mut to = from;
+        while to < row.len() && !row[to].is_whitespace() && !"\"'<>()[]{}│`".contains(row[to]) {
+            to += 1;
+        }
+        while to > from && ".,;:!?".contains(row[to - 1]) {
+            to -= 1;
+        }
+        if to - from > 8 {
+            out.push((from, to));
+        }
+        at = text.char_indices().nth(to).map_or(text.len(), |(b, _)| b);
+    }
+    out
+}
+
+/// The address under a cell, if there is one.
+fn url_at(screen: &vt100::Screen, row: u16, col: u16) -> Option<String> {
+    let chars = row_chars(screen, row);
+    urls(&chars).into_iter().find(|(a, b)| (*a..*b).contains(&(col as usize))).map(|(a, b)| chars[a..b].iter().collect())
 }
 
 /// What seeded() needs besides the screen, in this order.
@@ -747,11 +788,16 @@ impl Window {
             if let Some(s) = &mut self.selection {
                 s.to = to;
             }
-            if matches!(m.kind, MouseEventKind::Up(_)) && let Some(s) = self.selection.take() && s.from != s.to
+            if matches!(m.kind, MouseEventKind::Up(_)) && let Some(s) = self.selection.take()
                 && let Some(scr) = self.screens.get(&s.pane).and_then(Screen::shown)
             {
-                let ((r0, c0), (r1, c1)) = s.ordered();
-                copy(&scr.screen().contents_between(r0, c0, r1, c1 + 1));
+                if s.from != s.to {
+                    let ((r0, c0), (r1, c1)) = s.ordered();
+                    copy(&scr.screen().contents_between(r0, c0, r1, c1 + 1));
+                } else if let Some(url) = url_at(scr.screen(), s.from.0, s.from.1) {
+                    // a click on an address, without dragging: the browser, as a terminal does
+                    std::thread::spawn(move || drop(open_url(&url)));
+                }
             }
             self.dirty = true;
             return Ok(());
@@ -1037,6 +1083,10 @@ mod tests {
         assert_eq!(mouse_bytes(&drag, 0, 0, Mo::PressRelease, En::Sgr), None);
         assert_eq!(mouse_bytes(&drag, 0, 0, Mo::ButtonMotion, En::Sgr), Some(b"\x1b[<32;1;1M".to_vec()));
         let wheel = MouseEvent { kind: MouseEventKind::ScrollUp, ..m };
+        let row: Vec<char> = "  - Local:  http://localhost:9002, see https://x.dev/a?b=1). end".chars().collect();
+        let found: Vec<String> = urls(&row).into_iter().map(|(a, b)| row[a..b].iter().collect()).collect();
+        assert_eq!(found, ["http://localhost:9002", "https://x.dev/a?b=1"]);
+        assert!(urls(&"http:// nothing".chars().collect::<Vec<_>>()).is_empty());
         assert_eq!(mouse_bytes(&wheel, 0, 0, Mo::Press, En::Sgr), Some(b"\x1b[<64;1;1M".to_vec()));
     }
 

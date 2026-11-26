@@ -1013,6 +1013,9 @@ pub fn run() -> Res<()> {
                     app.error(&e);
                 }
             }
+            KeyCode::Char('a') => app.popup(tr().title_agent, (64, 14), &["dialog", "agent"]),
+            KeyCode::Char('s') if first_steps().is_some() => app.popup(tr().title_skill, DIALOG, &["dialog", "skill"]),
+            KeyCode::Char('x') if first_steps().is_some() => { write_state("onboarded", "").ok(); }
             KeyCode::Char('P') => if let Some(Row::Wt(w, _)) = app.selected() {
                 let id = w.id();
                 app.popup(tr().title_open_pr, (76, 13), &["dialog", "openpr", &id]);
@@ -1311,6 +1314,23 @@ fn pass_on(k: KeyCode) {
 }
 
 /// What is shown when no worktree is: the logo and what to do next. Keys go to the sidebar.
+/// The first steps, while no worktree was ever made and they were not hidden: (done, key, what). Each is done by
+/// what is there, not by having been seen.
+pub fn first_steps() -> Option<Vec<(bool, &'static str, String)>> {
+    let wts = load();
+    if !wts.is_empty() || state_dir().join("onboarded").exists() {
+        return None;
+    }
+    let repos = repos();
+    let project = match repos.first() {
+        Some(r) => (true, "A", (tr().step_project_done)(&r.file_name().unwrap_or_default().to_string_lossy())),
+        None => (false, "A", tr().step_project.to_string()),
+    };
+    let agent = if work::agent_chosen() { (true, "a", (tr().step_agent_done)(&work::default_agent())) } else { (false, "a", tr().step_agent.to_string()) };
+    let skill = (agent::shared_skill().exists(), "s", tr().step_skill.to_string());
+    Some(vec![project, agent, skill, (false, "n", tr().step_worktree.to_string())])
+}
+
 pub fn welcome() -> Res<()> {
     let mut term = ratatui::init();
     let (mut wakes, binary, mut draw) = (Wakes::start(), Binary::now(), true);
@@ -1337,7 +1357,9 @@ pub fn welcome() -> Res<()> {
         let drawn = term.draw(|f| {
             f.render_widget(Block::new().style(Style::new().bg(HULL).fg(FOAM)), f.area());
             let mut lines = vec![];
-            if f.area().height >= mark::H + 5 && f.area().width >= mark::W + 2 {
+            // the first steps come first: the mark only if both fit
+            let steps_height = if first_steps().is_some() { 12 } else { 0 };
+            if f.area().height >= mark::H + 5 + steps_height && f.area().width >= mark::W + 2 {
                 lines.extend(mark::lines());
                 lines.extend([Line::default(), Line::default()]);
             }
@@ -1351,9 +1373,29 @@ pub fn welcome() -> Res<()> {
                 lines.push(Line::from(vec![fg("R", FOAM), fg(format!(" {}", (tr().restore_offer)(lost)), MUTED)]));
                 lines.push(Line::default());
             }
-            lines.push(keys(&[("n", tr().k_new), ("A", tr().k_add), ("Opt+o", tr().k_commands)]));
-            let [_, middle, _] = Layout::vertical([Constraint::Fill(1), Constraint::Length(lines.len() as u16), Constraint::Fill(1)]).areas(f.area());
-            f.render_widget(Paragraph::new(lines).centered(), middle);
+            let steps = first_steps();
+            let mut list = vec![];
+            if let Some(steps) = &steps {
+                // the first time: what to do, step by step, each with its key; left-aligned in a centered block
+                list.push(Line::from(fg(tr().step_title, FOAM)).bold());
+                list.push(Line::default());
+                for (done, key, what) in steps {
+                    let (sign, color) = if *done { ("✓", KELP) } else { ("○", MUTED) };
+                    list.push(Line::from(vec![fg(sign, color), "  ".into(), fg(format!("{key:<2}"), if *done { MUTED } else { CURRENT }).bold(), " ".into(), fg(what.clone(), if *done { MUTED } else { FOAM })]));
+                }
+                list.push(Line::from(fg(format!("       {}", tr().step_then), MUTED)));
+                list.push(Line::default());
+                list.push(keys(&[("x", tr().k_hide), ("Opt+o", tr().k_commands)]));
+            } else {
+                lines.push(keys(&[("n", tr().k_new), ("A", tr().k_add), ("Opt+o", tr().k_commands)]));
+            }
+            let height = (lines.len() + list.len()) as u16;
+            let [_, middle, _] = Layout::vertical([Constraint::Fill(1), Constraint::Length(height), Constraint::Fill(1)]).areas(f.area());
+            let [top, rest] = Layout::vertical([Constraint::Length(lines.len() as u16), Constraint::Fill(1)]).areas(middle);
+            f.render_widget(Paragraph::new(lines).centered(), top);
+            let width = list.iter().map(Line::width).max().unwrap_or(0) as u16;
+            let [_, block, _] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(width.min(rest.width)), Constraint::Fill(1)]).areas(rest);
+            f.render_widget(Paragraph::new(list), block);
         });
         if let Err(e) = drawn {
             break Err(e.to_string());
@@ -1442,7 +1484,7 @@ pub fn rail() -> Res<()> {
             (KeyCode::Char('w'), Some(p)) if p.worktree(&wts).is_some() => Ok(()),
             (KeyCode::Char('w'), Some(p)) if p.fork => Err(tr().fork.into()),
             (KeyCode::Char('w'), Some(p)) => {
-                popup(tr().title_pr, DIALOG, &["dialog", "pr", &p.path.to_string_lossy(), &p.branch, &format!("#{} {}", p.number, p.title)])
+                popup(tr().title_pr, DIALOG, &["dialog", "pr", &p.path.to_string_lossy(), &p.branch, &format!("#{} {}", p.number, p.title), &p.login])
             }
             _ => Ok(()),
         };
@@ -1813,7 +1855,7 @@ pub fn dialog_view(url: &str) -> Res<()> {
                 KeyCode::Char('w') if wt.is_none() && ask.is_none() => {
                     if p.fork {
                         msg = tr().fork.into();
-                    } else if create_view(term, &p.path, &p.branch, &format!("#{} {}", p.number, p.title))? {
+                    } else if create_view(term, &p.path, &p.branch, &format!("#{} {}", p.number, p.title), &p.login)? {
                         break Ok(());
                     }
                 }
@@ -2111,6 +2153,105 @@ pub fn dialog_open_pr(w: &Wt) -> Res<()> {
     })
 }
 
+/// The agent that `orcux run` starts. `e` edits the command of one (`claudep` instead of `claude`: an alias, a wrapper);
+/// the last row adds one that orcux does not know.
+pub fn dialog_agent() -> Res<()> {
+    let mut all = work::agents();
+    let chosen = work::default_agent();
+    let mut sel = all.iter().position(|a| a.0 == chosen).unwrap_or(0);
+    // what is being written: the command of a row, or "name command" of a new one in the last
+    let mut typing = None::<String>;
+    let mut err = String::new();
+    dialog(|term| loop {
+        let own = work::own_agents();
+        term.draw(|f| {
+            let [list, foot] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(f.area());
+            let w = f.area().width;
+            let mut lines: Vec<Line> = all.iter().enumerate().map(|(i, (name, cmd))| {
+                let (here, mine) = (work::installed(cmd), own.contains(name));
+                let (state, color) = if mine { (tr().agent_yours, CURRENT) } else if here { (tr().agent_here, KELP) } else { (tr().agent_missing, MUTED) };
+                let shown = match &typing { Some(t) if i == sel => format!("{t}▏"), _ => cmd.clone() };
+                let l = Line::from(vec![
+                    fg(if *name == chosen { " ● " } else { "   " }, CURRENT),
+                    fg(format!("{name:<10}"), if here || mine { FOAM } else { MUTED }).bold(),
+                    fg(format!("{state:<12}"), color),
+                    fg(shown, if typing.is_some() && i == sel { FOAM } else { MUTED }),
+                ]);
+                if i == sel { selected(l, w) } else { l }
+            }).collect();
+            let add = match &typing { Some(t) if sel == all.len() => format!("{t}▏"), _ => tr().agent_add.to_string() };
+            let last = Line::from(vec![fg("   ", FOAM), fg(add, if sel == all.len() && typing.is_some() { FOAM } else { CURRENT })]);
+            lines.push(if sel == all.len() { selected(last, w) } else { last });
+            if typing.is_some() {
+                let hint = if sel == all.len() { tr().agent_add_hint } else { tr().agent_own_hint };
+                lines.extend([Line::default(), Line::from(fg(format!("   {hint}"), MUTED))]);
+            }
+            if !err.is_empty() {
+                lines.extend([Line::default(), Line::from(fg(format!("   {err}"), CORAL))]);
+            }
+            f.render_widget(Paragraph::new(lines), list);
+            let k: &[(&str, &str)] = if typing.is_some() { &[("⏎", tr().k_use), ("esc", tr().k_back)] } else { &[("↑/↓", tr().k_move), ("⏎", tr().k_use), ("e", tr().k_edit), ("esc", tr().k_close)] };
+            f.render_widget(keys(k), foot);
+        }).map_err(|e| e.to_string())?;
+        let Some(k) = key()? else { continue };
+        if let Some(t) = &mut typing {
+            match k {
+                KeyCode::Esc => typing = None,
+                KeyCode::Backspace => { t.pop(); }
+                KeyCode::Char(c) => t.push(c),
+                KeyCode::Enter if !t.trim().is_empty() => {
+                    let text = t.trim().to_string();
+                    // a row keeps its name; a new one is named by its first word
+                    let name = if sel < all.len() { all[sel].0.clone() } else { text.split_whitespace().next().unwrap_or_default().to_string() };
+                    let cmd = if text.contains("{prompt}") { text } else { format!("{text} {{prompt}}") };
+                    match work::agents_cmd(&["set", &name, &cmd]).and_then(|_| work::agents_cmd(&["use", &name])) {
+                        Ok(()) => return Ok(()),
+                        Err(e) => err = e,
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        match k {
+            KeyCode::Esc => return Ok(()),
+            KeyCode::Down | KeyCode::Char('j') => sel = (sel + 1).min(all.len()),
+            KeyCode::Up | KeyCode::Char('k') => sel = sel.saturating_sub(1),
+            KeyCode::Char('e') if sel < all.len() => typing = Some(all[sel].1.clone()),
+            KeyCode::Enter if sel == all.len() => typing = Some(String::new()),
+            KeyCode::Enter => return work::agents_cmd(&["use", &all[sel].0]),
+            _ => {}
+        }
+        all = work::agents();
+    })
+}
+
+/// A row of a list in a dialog, as the selected one: the card of a popup is HULL already, so the selection is WAKE, to
+/// the edge.
+fn selected(l: Line<'_>, width: u16) -> Line<'_> {
+    let pad = " ".repeat((width as usize).saturating_sub(l.width()));
+    let mut l = l;
+    l.spans.push(pad.into());
+    l.spans.iter_mut().for_each(|s| s.style.bg = Some(WAKE));
+    l
+}
+
+/// The skill where other agents look, after a yes: it is the person's home.
+pub fn dialog_skill() -> Res<()> {
+    dialog(|term| {
+        let mut yes = true;
+        loop {
+            let lines = vec![Line::from((tr().ask_skill)(&tilde(&agent::shared_skill()))), Line::default(), Line::from(tr().skill_why).fg(MUTED)];
+            draw_choice(term, lines, yes, "")?;
+            match key()?.and_then(|k| chosen(k, &mut yes)) {
+                None => {}
+                Some(false) => return Ok(()),
+                Some(true) => return agent::write_skill(),
+            }
+        }
+    })
+}
+
 pub fn dialog_rename(w: &Wt) -> Res<()> {
     dialog(|term| {
         // a program in its terminals is told at once, not after typing
@@ -2222,12 +2363,12 @@ pub fn dialog_rm_repo(repo: &Path) -> Res<()> {
     })
 }
 
-pub fn dialog_pr(repo: &Path, branch: &str, label: &str) -> Res<()> {
-    dialog(|term| create_view(term, repo, branch, label).map(|_| ()))
+pub fn dialog_pr(repo: &Path, branch: &str, label: &str, login: &str) -> Res<()> {
+    dialog(|term| create_view(term, repo, branch, label, login).map(|_| ()))
 }
 
 /// Asks and creates the worktree of a PR; whether it did.
-fn create_view(term: &mut ratatui::DefaultTerminal, repo: &Path, branch: &str, label: &str) -> Res<bool> {
+fn create_view(term: &mut ratatui::DefaultTerminal, repo: &Path, branch: &str, label: &str, login: &str) -> Res<bool> {
     let repo_name = repo.file_name().unwrap_or_default().to_string_lossy().to_string();
     let port = 10000 + free_slot(&load()) * 100;
     let mut err = String::new();
@@ -2245,7 +2386,7 @@ fn create_view(term: &mut ratatui::DefaultTerminal, repo: &Path, branch: &str, l
             Some(KeyCode::Esc) => return Ok(false),
             Some(KeyCode::Enter) => {
                 draw_dialog(term, lines(Line::from(tr().fetching).fg(CURRENT)), "")?;
-                match create_for_pr(repo, branch).and_then(|w| show(&w)) {
+                match create_for_pr(repo, branch, login).and_then(|w| show(&w)) {
                     Ok(()) => return Ok(true),
                     Err(e) => err = short(&e),
                 }

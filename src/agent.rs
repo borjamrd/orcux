@@ -352,10 +352,14 @@ pub fn shared_skill() -> PathBuf {
 
 /// `orcux skill install`: the skill where every agent finds it. Asked for by the person: their home, not orcux's state.
 pub fn install_skill() -> crate::Res<()> {
-    let path = shared_skill();
-    put(&path, SKILL).ok_or_else(|| (crate::i18n::tr().skill_failed)(&tilde(&path)))?;
-    println!("{}", (crate::i18n::tr().skill_installed)(&tilde(&path)));
+    write_skill()?;
+    println!("{}", (crate::i18n::tr().skill_installed)(&tilde(&shared_skill())));
     Ok(())
+}
+
+pub fn write_skill() -> crate::Res<()> {
+    let path = shared_skill();
+    put(&path, SKILL).ok_or_else(|| (crate::i18n::tr().skill_failed)(&tilde(&path)))
 }
 
 pub fn remove_skill() -> crate::Res<()> {
