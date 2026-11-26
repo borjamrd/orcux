@@ -93,7 +93,7 @@ Worktrees share your computer, so two servers on port 3000 collide. Each termina
 | `ORCUX_SLOT`, `ORCUX_ID` | the number and the name of the worktree |
 | `COMPOSE_PROJECT_NAME` | so that Docker Compose keeps them apart |
 
-Use them in your scripts: `vite --port $ORCUX_PORT`. Files that git ignores and you need in every worktree, such as `.env`, go in a `.worktreeinclude`.
+Use them in your scripts: `vite --port $ORCUX_PORT`. Files that git ignores and you need in every worktree, such as `.env`, go in a `.worktreeinclude`: paths, or patterns as in `.gitignore` (`*.env`, `config/**/local.*`, `!keep.env`), copied when the worktree is made.
 
 ## Bringing work back
 

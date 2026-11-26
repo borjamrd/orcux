@@ -57,7 +57,7 @@ Model:
 - Prompts and errors are popups, never sidebar text: the sidebar calls `popup()`, which runs `orcux dialog new|rm|error` (internal) in a centered `display-popup` and blocks until it closes.
 - Worktrees go in `~/orcux/<repo>/<name>`. `orcux import` registers existing ones where they are (4th column of `worktrees.tsv`): they are named after their folder, never moved, and `rm`/`d` only unregisters them, even with `--force`. PRs match a worktree by its checked-out branch, read from git's files.
 - `worktrees.tsv` columns: repo, name, slot, path if imported, parent's name if it is a child. A child starts at its parent's last commit and is drawn under it; its folder is not inside, and removing the parent moves it up one level. Each pane gets `ORCUX_PORT=10000+slot*100`, `ORCUX_ID`, `ORCUX_SLOT` and `COMPOSE_PROJECT_NAME` via `tmux -e`.
-- `.worktreeinclude` in the main checkout is copied into the new worktree (literal paths only, globs skipped).
+- `.worktreeinclude` in the main checkout is copied into the new worktree: literal paths, and patterns matched by `git ls-files --others --ignored --directory --exclude-from` (a matching folder is one entry, copied whole); never a path that climbs out.
 - New branch from `origin/HEAD` with `--no-track`. If the branch exists locally or on origin, it is reused.
 
 ## Gotchas already paid for
@@ -114,6 +114,5 @@ tmux kill-server; rm -rf ~/.cache/orcux-test
 ## Known pending items (not done on purpose)
 
 - Cursor and Antigravity have hooks, but only through files of the person (a plugin installed, `~/.cursor/hooks.json`): orcux reads their screen instead. Cursor's signs come from its code; it was not logged in to film it.
-- Globs in `.worktreeinclude` (`git ls-files -oi --exclude-from`).
 
 Deliberate simplifications are marked with `ponytail:` comments in the code.

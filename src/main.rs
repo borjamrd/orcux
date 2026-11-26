@@ -591,17 +591,31 @@ fn remove_worktree(repo: &Path, args: &[&str]) -> Res<()> {
     }
 }
 
-/// Copies the local-only files listed in the main checkout's .worktreeinclude.
-// ponytail: literal paths only (files or dirs); glob lines are skipped. Add `git ls-files -oi` if globs are needed.
+/// Copies the local-only files listed in the main checkout's .worktreeinclude: paths, and patterns as in
+/// .gitignore (`*.env`, `config/**/local.*`, `!keep`), matched by git among the files it does not track.
 fn copy_includes(repo: &Path, dst: &Path) -> Res<()> {
     let Ok(list) = fs::read_to_string(repo.join(".worktreeinclude")) else { return Ok(()) };
-    for l in list.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
-        let rel = l.trim_start_matches('/').trim_end_matches('/');
-        let src = repo.join(rel);
-        if rel.contains(['*', '?', '[']) || !src.exists() {
+    let lines: Vec<&str> = list.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
+    let mut found: Vec<String> = lines.iter().filter(|l| !l.contains(['*', '?', '[', '!']))
+        .map(|l| l.trim_start_matches('/').trim_end_matches('/').to_string()).collect();
+    if lines.iter().any(|l| l.contains(['*', '?', '['])) {
+        // a folder that matches is one entry (--directory): node_modules is copied whole, not listed file by file
+        let file = repo.join(".worktreeinclude");
+        let out = git(repo, &["ls-files", "-z", "--others", "--ignored", "--directory", "--exclude-from", &file.to_string_lossy()])?;
+        found.extend(out.split('\0').filter(|p| !p.is_empty()).map(|p| p.trim_end_matches('/').to_string()));
+    }
+    found.sort();
+    found.dedup();
+    for rel in found {
+        let src = repo.join(&rel);
+        // inside the repo, and not a path that climbs out of it
+        if !src.exists() || Path::new(&rel).components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
             continue;
         }
-        let to = dst.join(rel);
+        let to = dst.join(&rel);
+        if to.exists() {
+            continue;
+        }
         fs::create_dir_all(to.parent().unwrap()).map_err(|e| e.to_string())?;
         run("cp", &["-R", src.to_str().unwrap(), to.to_str().unwrap()], None)?;
     }

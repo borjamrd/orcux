@@ -394,3 +394,22 @@ fn the_first_time_shows_the_first_steps() {
     until("they are hidden", || !screen().contains("○  n"));
     assert!(lab.dir.join("home/.local/state/orcux/onboarded").exists());
 }
+
+#[test]
+fn includes_copy_paths_and_patterns() {
+    let Some(lab) = ready() else { return };
+    let repo = lab.dir.join("repo");
+    fs::write(repo.join(".gitignore"), "*.env\nlocal/\nsecret.txt\n").unwrap();
+    for (f, t) in [(".env", "A=1"), ("api.env", "B=2"), ("keep.env", "no"), ("secret.txt", "s"), ("local/x.json", "{}"), ("local/deep/y.json", "{}")] {
+        fs::create_dir_all(repo.join(f).parent().unwrap()).unwrap();
+        fs::write(repo.join(f), t).unwrap();
+    }
+    fs::write(repo.join(".worktreeinclude"), "*.env\n!keep.env\nsecret.txt\nlocal/\nmissing.txt\n").unwrap();
+    commit(&repo, ".gitignore", "*.env\nlocal/\nsecret.txt\n");
+    assert!(any(&lab, &["new", "inc", "--repo", repo.to_str().unwrap()]).status.success());
+    let w = wt(&lab, "inc");
+    for f in [".env", "api.env", "secret.txt", "local/x.json", "local/deep/y.json"] {
+        assert!(w.join(f).exists(), "{f} was not copied");
+    }
+    assert!(!w.join("keep.env").exists() && !w.join("missing.txt").exists());
+}
