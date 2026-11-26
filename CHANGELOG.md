@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The first time, `orcux` inside a repo adds it, and the empty screen lists the first steps: project, agent, skill for every agent, first worktree. `a` chooses the agent of `orcux run`, also your own command; Antigravity is one of those it knows.
 - After a restart, Antigravity goes on with its conversation too, and Codex and Gemini CLI with the last one of their folder.
 
 ## 0.2.0

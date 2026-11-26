@@ -1447,7 +1447,13 @@ fn cli(a: &[&str]) -> Res<()> {
         control::borrow();
     }
     match a {
-        [] => attach(),
+        [] => {
+            // the first time, inside a repo: that is the project the person came with
+            if repos().is_empty() && let Ok(dir) = env::current_dir() {
+                add_repo(&dir).ok();
+            }
+            attach()
+        }
         ["sidebar"] => tui::run(),
         ["hook", event, rest @ ..] => {
             agent::hook(event, rest);
@@ -1501,6 +1507,8 @@ fn cli(a: &[&str]) -> Res<()> {
         ["dialog", "rmrepo", repo] => tui::dialog_rm_repo(Path::new(repo)),
         ["dialog", "rm", id] => tui::dialog_rm(&find(Some(id))?),
         ["dialog", "rename", id] => tui::dialog_rename(&find(Some(id))?),
+        ["dialog", "agent"] => tui::dialog_agent(),
+        ["dialog", "skill"] => tui::dialog_skill(),
         ["dialog", "openpr", id] => tui::dialog_open_pr(&find(Some(id))?),
         ["dialog", "pr", repo, branch, label] => tui::dialog_pr(Path::new(repo), branch, label),
         ["dialog", "view", url] => tui::dialog_view(url),

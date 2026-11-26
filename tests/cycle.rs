@@ -378,3 +378,19 @@ fn an_agent_without_hooks_comes_back_too() {
     lab.orcux(&["restore"]);
     until("the conversation goes on", || fs::read_to_string(&said).is_ok_and(|t| t.ends_with("--conversation conv-1\n")));
 }
+
+#[test]
+fn the_first_time_shows_the_first_steps() {
+    let Some(lab) = ready() else { return };
+    let repo = lab.dir.join("repo");
+    // orcux, the first time, inside a repo: that repo is the project, and the steps are on the empty screen
+    lab.tmux(&["-L", "outer", "-f", "/dev/null", "new-session", "-d", "-s", "o", "-x", "150", "-y", "32", "-c", repo.to_str().unwrap(), &format!("env -u TMUX '{ORCUX}'")]);
+    let screen = || lab.tmux(&["-L", "outer", "capture-pane", "-p", "-t", "o"]);
+    until("the first steps", || screen().contains("✓  A") && screen().contains("○  n"));
+    let repos = fs::read_to_string(lab.dir.join("home/.local/state/orcux/repos")).unwrap();
+    assert!(repos.lines().any(|l| Path::new(l).ends_with("repo")), "{repos}");
+    // hidden with x, for good
+    lab.tmux(&["-L", "outer", "send-keys", "-t", "o", "x"]);
+    until("they are hidden", || !screen().contains("○  n"));
+    assert!(lab.dir.join("home/.local/state/orcux/onboarded").exists());
+}

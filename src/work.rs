@@ -3,12 +3,13 @@ use crate::*;
 use std::sync::mpsc;
 
 /// Agents that orcux knows how to start with a task. Those of the user, in the file `agents`, come first.
-const AGENTS: [(&str, &str); 5] = [
+const AGENTS: [(&str, &str); 6] = [
     ("claude", "claude {prompt}"),
     ("codex", "codex {prompt}"),
     ("gemini", "gemini -i {prompt}"),
     ("opencode", "opencode --prompt {prompt}"),
     ("cursor", "cursor-agent {prompt}"),
+    ("agy", "agy -i {prompt}"),
 ];
 
 /// (name, command), without repeated names.
@@ -22,6 +23,17 @@ pub fn agents() -> Vec<(String, String)> {
         }
     }
     all
+}
+
+/// Whether its program is in the PATH. A shell function or an alias is not found: the person writes their own.
+pub fn installed(cmd: &str) -> bool {
+    let program = cmd.split_whitespace().next().unwrap_or_default();
+    env::var_os("PATH").is_some_and(|p| env::split_paths(&p).any(|d| d.join(program).is_file()))
+}
+
+/// The person chose one, or wrote their own.
+pub fn agent_chosen() -> bool {
+    state_dir().join("agent").exists()
 }
 
 pub fn default_agent() -> String {
