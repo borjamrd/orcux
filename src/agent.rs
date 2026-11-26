@@ -2,6 +2,8 @@
 //! - Claude Code and OpenCode load a small plugin, through environment variables of orcux's terminals, that runs
 //!   `orcux hook`. What OpenCode says is exact; Claude Code does not tell everything, and `settle` fills the gaps.
 //! - Those that tell in the title of their terminal (Gemini CLI, Codex) are followed by the sidebar.
+//! - The others, and those too when it tells more, by what their screen shows (`from_screen`): the signs that agents
+//!   draw while they work and when they ask. Read only when it printed something since.
 //! - For the rest, "working" means that their screen moves.
 use crate::*;
 
@@ -120,6 +122,67 @@ fn next_by_title(was: Option<Agent>, title: &str) -> Option<Agent> {
     (was != Some(new)).then_some(new)
 }
 
+/// Signs on the screen, lowercase, seen in the real ones: a permission it waits for, a question (a menu), work.
+const ASKS_PERMISSION: [&str; 11] = [
+    "requesting permission for", "run this command?", "do you want to proceed?", // Antigravity
+    "run (once)", "waiting for approval", // Cursor
+    "allow command?", "would you like to run", "yes, proceed", // Codex
+    "allow execution", "waiting for user confirmation", "apply this change?", // Gemini CLI
+];
+const ASKS: [&str; 3] = ["↑/↓ navigate", "your answer:", "enter to select"];
+const WORKS: [&str; 4] = ["esc to interrupt", "esc to cancel", "ctrl+c to stop", "ctrl+c to interrupt"];
+
+/// What the bottom of a screen tells about its agent, if anything: the waiting comes first, because some keep their
+/// "esc to cancel" under a question. A line that asks yes or no counts only as the last one: above, it was answered.
+pub fn from_screen(text: &str) -> Option<Agent> {
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let tail = lines[lines.len().saturating_sub(15)..].join("\n").to_lowercase();
+    let last = lines.last().map(|l| l.to_lowercase()).unwrap_or_default();
+    let has = |signs: &[&str]| signs.iter().any(|s| tail.contains(s));
+    if has(&ASKS_PERMISSION) || last.contains("[y/n]") || last.contains("(y/n)") {
+        return Some(Agent::Permission);
+    }
+    if has(&ASKS) {
+        return Some(Agent::Question);
+    }
+    // a spinner of braille dots before what it does: "⣷  Generating..."
+    let spins = |l: &&str| l.starts_with(|c| ('\u{2801}'..='\u{28ff}').contains(&c)) && (l.ends_with("...") || l.ends_with('…') || l.contains("... "));
+    (has(&WORKS) || lines[lines.len().saturating_sub(15)..].iter().any(spins)).then_some(Agent::Working)
+}
+
+/// A terminal whose agent tells nothing by itself, or only in its title: its screen is read.
+pub fn reads_screen(p: &Pane) -> bool {
+    !p.shell && (p.mark.is_empty() || matches!(p.mark.split(' ').nth(2), Some("title" | "screen" | "launched")))
+}
+
+/// Its new mark by what its screen shows. `still`: seconds since it last changed. With nothing to see, a turn that
+/// worked is done once the screen stays still (between two signs it only pauses), and a question that left was answered.
+pub fn by_screen(p: &mut Pane, text: &str, still: Option<u64>) {
+    let was = p.agent;
+    let ours = p.mark.ends_with(" screen");
+    let new = match (from_screen(text), was.map(|a| a.0)) {
+        (Some(a), _) => a,
+        (None, Some(Agent::Working)) if ours && still.is_some_and(|s| s >= 3) => Agent::Done,
+        (None, Some(Agent::Question | Agent::Permission)) if ours => Agent::Idle,
+        _ => return,
+    };
+    // the same as its title told: it is followed by the screen from now on, since when it was so
+    let at = match was {
+        Some((a, _)) if a == new && ours => return,
+        Some((a, at)) if a == new => at,
+        _ => prs::now(),
+    };
+    set_mark(p, new, at, "screen");
+}
+
+/// Changes the mark of a pane, unless something changed it meanwhile.
+fn set_mark(p: &mut Pane, new: Agent, at: u64, source: &str) {
+    let mark = format!("{} {at} {source}", new.name());
+    let same = format!("#{{==:#{{@orcux_state}},{}}}", p.mark);
+    tmux(&["if-shell", "-F", "-t", &p.pane, &same, &format!("set-option -p -t '{}' @orcux_state '{mark}'", p.pane)]).ok();
+    (p.agent, p.mark) = (Some((new, at)), mark);
+}
+
 /// Whether a mark is the one of a new terminal, and whether it is too old to be believed: its agent has no hooks, or waits
 /// for something before them.
 pub fn begins(mark: &str) -> (bool, bool) {
@@ -151,14 +214,12 @@ pub fn follow(p: &mut Pane) {
         }
         return;
     }
+    // followed by its screen: `by_screen`
     if !p.mark.is_empty() && !p.mark.ends_with(" title") && !begins {
         return;
     }
     if let Some(new) = next_by_title(p.agent.map(|a| a.0), &p.title) {
-        let mark = format!("{} {} title", new.name(), prs::now());
-        let same = format!("#{{==:#{{@orcux_state}},{}}}", p.mark);
-        tmux(&["if-shell", "-F", "-t", &p.pane, &same, &format!("set-option -p -t '{}' @orcux_state '{mark}'", p.pane)]).ok();
-        (p.agent, p.mark) = (Some((new, prs::now())), mark);
+        set_mark(p, new, prs::now(), "title");
     }
 }
 
@@ -327,6 +388,26 @@ mod tests {
         assert_eq!(t(None, "⠋ web"), Some(Agent::Working)); // Codex: a spinner, then only the project
         assert_eq!(t(Some(Agent::Working), "web"), Some(Agent::Done));
         assert_eq!((t(None, "vim"), t(None, ""), t(Some(Agent::Done), "web")), (None, None, None));
+    }
+
+    #[test]
+    fn screens() {
+        let bottom = |body: &str, foot: &str| format!("  Antigravity CLI 1.5.18\n> Run ls\n{body}\n────\n>\n────\n{foot}   auto · Gemini · medium\n");
+        let s = |t: &str| from_screen(t);
+        // Antigravity, as it really draws: working, asking, idle, and its first question
+        assert_eq!(s(&bottom("⣷  Generating...", "esc to cancel")), Some(Agent::Working));
+        assert_eq!(s(&bottom("● Running (ls) (ctrl+o to expand)\n⣟  Running command... 1s", "esc to cancel")), Some(Agent::Working));
+        let asks = "Requesting permission for:\n   rm -rf tmpdir\nRun this command?\n> 1. Yes, run command\n  4. No, cancel\n  ↑/↓ Navigate · tab Amend";
+        assert_eq!(s(&bottom(asks, "esc to cancel")), Some(Agent::Permission));
+        assert_eq!(s(&bottom("● Ran (ls) (ctrl+o to expand)\n  Done.", "? for shortcuts")), None);
+        let trust = "Do you trust the contents of this project?\n> Yes, I trust this folder\n  No, exit\n  ↑/↓ Navigate · enter Confirm";
+        assert_eq!(s(trust), Some(Agent::Question));
+        // Codex, Cursor and a plain prompt
+        assert_eq!(s("• Working (12s • esc to interrupt)\n› "), Some(Agent::Working));
+        assert_eq!(s("$ rm x\n→ Run (once) (y)\n  Skip (esc or n)"), Some(Agent::Permission));
+        assert_eq!(s("Overwrite a.txt? [y/N] "), Some(Agent::Permission));
+        assert_eq!(s("Overwrite a.txt? [y/N] y\ndone\n$"), None); // answered
+        assert_eq!(s("⢎⡱ orcux\n"), None); // braille that is no spinner
     }
 
     #[test]
