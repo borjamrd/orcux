@@ -5,6 +5,7 @@
 #       hero     docs/demo.gif: what agents do, Opt+r, the diff commented for the agent, a pull request
 #       switch   docs/demo-switch.gif: moving between worktrees and tabs
 #       agents   docs/demo-agents.gif: an agent hands parts of its task to sub-agents in child worktrees
+#       survive  docs/demo-survive.gif: orcux closes, its agents go on, and it opens where they are
 #   docs/demo/record.sh setup [scene]   only set a scene up, to look at it: tmux -S ~/.cache/orcux-demo/outer attach
 #   docs/demo/record.sh clean           stop and delete everything it started
 set -eu
@@ -37,8 +38,9 @@ if [ "${1:-}" = clean ]; then clean; exit 0; fi
 
 # a home, repos, worktrees with pretend agents, and the person's terminal running orcux. $1: the scene
 setup() {
-    lead=done first=search
+    lead=done first=search limit=work
     [ "$1" = agents ] && lead=lead first=checkout
+    [ "$1" = survive ] && limit=later
     cd "$root"              # not in the home of the scene before, which clean deletes
     clean
     mkdir -p "$TMUX_TMPDIR"
@@ -93,13 +95,20 @@ setup() {
     agent checkout "$lead"
     agent login-fix ask
     agent search work
-    agent rate-limit "work 'Limit requests per customer'"
+    agent rate-limit "$limit 'Limit requests per customer'"
     orcux tab new search >/dev/null
     orcux send search:2 'echo "dev server on port $ORCUX_PORT"'
     orcux show "$first"
 
     # the person's terminal
-    tmux -S "$outer" -f /dev/null new-session -d -s demo -x "$COLS" -y "$ROWS" "env -u TMUX -u TMUX_PANE orcux; sleep 600"
+    if [ "$1" = survive ]; then
+        # a shell, where orcux is opened, closed and opened again
+        tmux -S "$outer" -f /dev/null new-session -d -s demo -x "$COLS" -y "$ROWS" "env -u TMUX -u TMUX_PANE $SHELL"
+        sleep 0.5
+        tmux -S "$outer" send-keys -t demo 'clear; orcux' Enter
+    else
+        tmux -S "$outer" -f /dev/null new-session -d -s demo -x "$COLS" -y "$ROWS" "env -u TMUX -u TMUX_PANE orcux; sleep 600"
+    fi
     tmux -S "$outer" set -g status off
 }
 
@@ -234,13 +243,28 @@ agents() {
     shot 2200 'Opt w|any of them'
 }
 
+survive() {
+    hero_wait
+    film 10 150 '|agents at work in their worktrees'
+    click 8 20; sleep 0.4; press q; until_on '$'; sleep 0.5
+    shot 1800 'q|close orcux, or the terminal'
+    touch "$HOME/.demo/finish"          # rate-limit ends while orcux is closed
+    sleep 1.5
+    shot 1400 '|its agents go on without it'
+    typed orcux '|its agents go on without it' 1
+    shot 500 '|its agents go on without it'
+    press Enter; until_on '┤ 1 ● agent'; until_on 'Your PRs'; sleep 0.8
+    film 16 150 'orcux|back where they were: rate-limit finished meanwhile'
+}
+
 # one scene into its GIF; PNGS=<dir> keeps the frames as pictures too, to look at them
 record() {
     case $1 in
     hero) gif=demo.gif ;;
     switch) gif=demo-switch.gif ;;
     agents) gif=demo-agents.gif ;;
-    *) echo "no scene $1: hero, switch or agents" >&2; exit 1 ;;
+    survive) gif=demo-survive.gif ;;
+    *) echo "no scene $1: hero, switch, agents or survive" >&2; exit 1 ;;
     esac
     setup "$1"
     frames="$TMUX_TMPDIR/frames"
@@ -257,5 +281,5 @@ if [ "${1:-}" = setup ]; then
 fi
 trap clean EXIT
 trap 'exit 1' INT TERM
-[ $# -gt 0 ] || set -- hero switch agents
+[ $# -gt 0 ] || set -- hero switch agents survive
 for scene in "$@"; do record "$scene"; done

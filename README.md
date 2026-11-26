@@ -46,6 +46,10 @@ orcux
 
 ## More in motion
 
+**Agents go on without you**: close orcux, or the terminal, and open it again: they kept working.
+
+![orcux: q closes it while its agents work; orcux opens it again where they are, and one finished meanwhile](docs/demo-survive.gif)
+
 **Move between worktrees**: `Opt+w` finds one by its name or its pull request, `Opt+w ⏎` goes back and forth, `Opt+t` opens a tab with the ports of its worktree.
 
 ![orcux: Opt+w finds a worktree by name or by pull request and shows it; a new tab prints the worktree's port](docs/demo-switch.gif)

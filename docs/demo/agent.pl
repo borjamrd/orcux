@@ -1,7 +1,8 @@
 #!/usr/bin/perl
 # A pretend coding agent for the demo: it draws what agents draw (a spinner over "esc to cancel", a permission
 # menu, a finished answer) and tells orcux its state with "orcux hook <state> exact". No real agent runs.
-#   perl agent.pl work|ask|done|lead|sub [task]
+#   perl agent.pl work|ask|done|lead|sub|later [task]
+# later works until the file ~/.demo/finish exists, then is done.
 # lead waits for a task, then hands three parts of it to sub-agents in child worktrees (orcux run --parent) and waits
 # for them; sub is one of those.
 use strict;
@@ -53,6 +54,7 @@ sub frame {
 
 my $task = {
     work => $given || 'Add search by product name to the catalog',
+    later => $given || 'Limit requests per customer',
     ask  => 'Fix the redirect after sign-in',
     done => 'Show the cart total on the checkout page',
     lead => '',
@@ -65,7 +67,7 @@ sub diff { "  $green+$_[0]$off" . (defined $_[1] ? " $yellow-$_[1]$off" : '') }
 sub result { "  ${dim}└ $_[0]$off\n" }
 
 my %steps = (
-    work => $given =~ /request/i
+    work => $given =~ /request/i || $role eq 'later'
         ? step('Read', 'src/limits.ts') . step('Edit', 'src/limits.ts', diff(12, 1)) . step('Run', 'npm test -- limits') . result('7 passed')
         : step('Read', 'src/catalog/search.ts') . step('Edit', 'src/catalog/search.ts', diff(24, 3)) . step('Run', 'npm test -- search') . result('18 passed'),
     ask  => step('Read', 'src/auth/redirect.ts') . step('Edit', 'src/auth/redirect.ts', diff(6, 2)),
@@ -117,6 +119,15 @@ sub typing {
 
 if ($role eq 'work') {
     working($steps{work});
+} elsif ($role eq 'later') {
+    hook('working');
+    my $i = 0;
+    while (!-e "$ENV{HOME}/.demo/finish") {
+        frame($head . $steps{work} . spinner($i++, 'Working…', time - $start), 'esc to cancel');
+        sleep 0.12;
+    }
+    hook('done');
+    typing(sub { frame($head . $steps{work} . "\nEach customer gets 100 requests a minute; past that,\nthe API answers 429 with a Retry-After header.\n", '? for shortcuts') });
 } elsif ($role eq 'ask') {
     hook('permission');
     my $menu = "\n${yellow}Requesting permission for:$off\n   ${bold}npm test -- auth$off\nRun this command?\n$blue>$off 1. Yes, run command\n  2. No, cancel\n";
