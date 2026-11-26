@@ -83,9 +83,9 @@ pub fn prompt(path: &str, rows: &[Row], notes: &BTreeMap<usize, String>) -> Stri
 /// `orcux dialog diff <dir> <path>`.
 pub fn show(dir: &Path, path: &str) -> Res<()> {
     let rows = read(dir, path);
-    let (fg, muted, add, del, hunk, note, hull) = (
+    let (fg, muted, add, del, hunk, note, selected) = (
         Color::from_u32(theme::FOAM), Color::from_u32(theme::MUTED), Color::from_u32(theme::KELP), Color::from_u32(theme::CORAL),
-        Color::from_u32(theme::CURRENT), Color::from_u32(theme::SIGNAL), Color::from_u32(theme::HULL),
+        Color::from_u32(theme::CURRENT), Color::from_u32(theme::SIGNAL), Color::from_u32(theme::WAKE),
     );
     // start on the first change
     let mut sel = rows.iter().position(|r| matches!(r.kind, Kind::Add | Kind::Del)).unwrap_or(0);
@@ -126,7 +126,7 @@ pub fn show(dir: &Path, path: &str) -> Res<()> {
                     let num = r.line.map(|n| format!("{n:>6} ")).unwrap_or_else(|| " ".repeat(7));
                     let mark = if notes.contains_key(&i) { "✎" } else { " " };
                     let mut l = Line::from(vec![Span::styled(num, Style::new().fg(muted)), Span::styled(mark, Style::new().fg(note)), Span::styled(format!("{sign}{}", r.text), Style::new().fg(color))]);
-                    if i == sel { l = l.bg(hull); }
+                    if i == sel { l = l.bg(selected); }
                     l
                 }).collect();
                 f.render_widget(Paragraph::new(lines), body);
