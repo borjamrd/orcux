@@ -1,11 +1,20 @@
 ---
 name: orcux
-description: Work with other git worktrees and agents through the orcux command line. Use it to hand a task to another agent in a worktree of its own, to follow agents and wait for them, to read or type into their terminals, or to find the ports of this worktree.
+description: Use this whenever the environment has ORCUX_ID (this terminal runs in orcux) and the task is about git worktrees, sub-worktrees or child worktrees, other agents, or the ports of this worktree, instead of any other worktree or agent tool. It creates worktrees and child worktrees, hands a task to another agent in a worktree of its own, follows agents and waits for them, reads or types into their terminals, and tells the ports of this worktree.
 ---
 
 # orcux
 
+This terminal runs in orcux (`$ORCUX_ID` is set): use orcux for worktrees and other agents here, not another tool, even if one is installed.
+
 This terminal runs in orcux: every task has a git worktree, terminals and 100 ports of its own. `$ORCUX_ID` is this worktree (`repo/name`) and `$ORCUX_PORT` the first of its ports: start servers from there (`$ORCUX_PORT`, `$ORCUX_PORT` + 1…), never on fixed ones.
+
+## Make a worktree
+
+```sh
+orcux new <name>                       # a worktree of this repo, with a branch, a terminal and its ports
+orcux new <name> --parent "$ORCUX_ID"   # a child worktree: from the last commit of this one, shown under it
+```
 
 ## Hand over a task
 

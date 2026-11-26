@@ -1338,6 +1338,8 @@ fn cli(a: &[&str]) -> Res<()> {
         ["conflicts", rest @ ..] => std::process::exit(merge::conflicts(rest.first().copied())?),
         ["restore", rest @ ..] => restore::cmd(rest),
         ["dialog", "merge", id] => tui::dialog_merge(&find(Some(id))?),
+        ["skill", "install"] => agent::install_skill(),
+        ["skill", "remove"] => agent::remove_skill(),
         ["skill"] => {
             print!("{}", agent::SKILL);
             Ok(())

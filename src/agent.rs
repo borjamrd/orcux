@@ -277,7 +277,33 @@ pub fn plugin() -> Option<PathBuf> {
     for (path, text) in [(".claude-plugin/plugin.json", manifest), ("hooks/hooks.json", hooks.as_str()), ("skills/orcux/SKILL.md", SKILL)] {
         put(&dir.join(path), text)?;
     }
+    // the copy for other agents, if the person installed it: kept as this version says
+    if shared_skill().exists() {
+        put(&shared_skill(), SKILL);
+    }
     Some(dir)
+}
+
+/// Where agents other than Claude Code look for skills: one folder that many of them share.
+pub fn shared_skill() -> PathBuf {
+    home().join(".agents/skills/orcux/SKILL.md")
+}
+
+/// `orcux skill install`: the skill where every agent finds it. Asked for by the person: their home, not orcux's state.
+pub fn install_skill() -> crate::Res<()> {
+    let path = shared_skill();
+    put(&path, SKILL).ok_or_else(|| (crate::i18n::tr().skill_failed)(&tilde(&path)))?;
+    println!("{}", (crate::i18n::tr().skill_installed)(&tilde(&path)));
+    Ok(())
+}
+
+pub fn remove_skill() -> crate::Res<()> {
+    let dir = shared_skill();
+    let dir = dir.parent().unwrap_or(&dir);
+    if dir.exists() {
+        fs::remove_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

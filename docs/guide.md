@@ -41,7 +41,7 @@ orcux rm fix-the-login-redirect                  # keeps the branch
 
 `wait` ends with 0 when the agent is done, 2 when it asks something or needs permission, 3 when it failed, 4 on timeout and 5 when there is no agent. Several commands can run at once.
 
-Claude Code agents get this as a skill in the terminals of orcux. For others, `orcux skill` prints it.
+Claude Code agents get this as a skill in the terminals of orcux. For the others (Antigravity, Codex, Gemini CLI…), `orcux skill install` puts it in `~/.agents/skills/orcux/`, where they look, and orcux keeps it up to date; `orcux skill remove` takes it away. `orcux skill` prints it.
 
 ## Agents
 
