@@ -21,6 +21,14 @@ Measured by its own test, on every push: [how](docs/speed.md).
 
 ## Install
 
+Ask your coding agent:
+
+```text
+Install orcux from https://github.com/borjamrd/orcux with its install script (curl -fsSL https://raw.githubusercontent.com/borjamrd/orcux/master/packaging/install.sh | sh). Make sure ~/.local/bin is in my PATH, then run orcux doctor and tell me what it reports.
+```
+
+Or do it yourself:
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/borjamrd/orcux/master/packaging/install.sh | sh
 ```

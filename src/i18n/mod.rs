@@ -51,6 +51,7 @@ pub struct Text {
     pub title_pr: &'static str,
     pub title_close: &'static str,
     pub title_switch: &'static str,
+    pub detached: &'static str,
     pub window_inside: &'static str,
     pub ui_now: fn(&str, &str) -> String,
     pub engine_now: fn(&str, &str) -> String,
@@ -93,8 +94,6 @@ pub struct Text {
     // sidebar, status bar and switcher
     pub prs_yours: fn(usize) -> String,
     pub n_working: fn(usize) -> String,
-    pub working: fn(&str) -> String,
-    pub idle: fn(&str) -> String,
     pub agent_asks: &'static str,
     pub agent_permission: &'static str,
     pub agent_failed: &'static str,
