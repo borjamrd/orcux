@@ -709,7 +709,8 @@ impl Server {
         let (cols, rows) = (size.0.max(2), size.1.max(2));
         let mut ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
         let (mut master, mut slave) = (0, 0);
-        if unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &mut ws) } != 0 {
+        // *const on Linux, *mut on macOS: a raw pointer cast fits both
+        if unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &raw mut ws as _) } != 0 {
             return Err(format!("openpty: {}", std::io::Error::last_os_error()));
         }
         unsafe {
