@@ -125,7 +125,7 @@ fn launchd(exe: &std::path::Path, path: &PathBuf) -> Option<UnixStream> {
     let uid = unsafe { libc::getuid() };
     let label = format!("dev.orcux.server.{}", std::process::id());
     // the engine's environment is the one of its terminals: the one of whoever starts it, as with tmux
-    let vars: String = env::vars().filter(|(k, _)| !matches!(k.as_str(), "TMUX" | "TMUX_PANE" | "ORCUX_MUX"))
+    let vars: String = env::vars().filter(|(k, _)| !server::inherited_only(k))
         .map(|(k, v)| format!("<key>{}</key><string>{}</string>", esc(&k), esc(&v))).collect();
     let plist = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\

@@ -21,6 +21,13 @@ fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
+/// Variables of whoever started the server that are not for its terminals: of tmux, of a worktree, or the marks of an
+/// agent's own session (an agent started in a terminal would think it is a child of that one).
+pub fn inherited_only(k: &str) -> bool {
+    matches!(k, "TMUX" | "TMUX_PANE" | "ORCUX_MUX" | "ORCUX_ID" | "ORCUX_PORT" | "ORCUX_SLOT" | "ORCUX_NAME" | "CLAUDECODE")
+        || (k.starts_with("CLAUDE_CODE_") && k != "CLAUDE_CODE_USE_BEDROCK" && k != "CLAUDE_CODE_USE_VERTEX")
+}
+
 /// What a terminal asks of its terminal (where is the cursor, what are you, what colors), answered as a terminal would.
 #[derive(Default)]
 struct Asks {
@@ -341,10 +348,7 @@ extern "C" fn on_child(_: libc::c_int) {
 
 impl Server {
     pub fn new(socket: &Path) -> Server {
-        let mut env: BTreeMap<String, String> = std::env::vars().collect();
-        for k in ["TMUX", "TMUX_PANE", "ORCUX_ID", "ORCUX_PORT", "ORCUX_SLOT"] {
-            env.remove(k);
-        }
+        let env: BTreeMap<String, String> = std::env::vars().filter(|(k, _)| !inherited_only(k)).collect();
         Server {
             socket: socket.into(), started: now(), next: 0, panes: BTreeMap::new(), windows: BTreeMap::new(), sessions: BTreeMap::new(),
             clients: vec![], globals: Opts::new(), env, buffers: HashMap::new(), looked: Instant::now(), had: false, changed: true,
