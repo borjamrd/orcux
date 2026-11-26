@@ -825,7 +825,14 @@ fn poll_input(ms: u64) -> Option<Input> {
 fn input(e: Event) -> Option<Input> {
     match e {
         Event::Key(k) if k.kind == KeyEventKind::Press => {
-            Some(Input::Key(if k.modifiers.contains(KeyModifiers::CONTROL) { KeyCode::Esc } else { k.code }))
+            // Opt+↑ / ↓ move the selected row, as K / J do
+            let alt = k.modifiers.contains(KeyModifiers::ALT);
+            Some(Input::Key(match k.code {
+                _ if k.modifiers.contains(KeyModifiers::CONTROL) => KeyCode::Esc,
+                KeyCode::Up if alt => KeyCode::Char('K'),
+                KeyCode::Down if alt => KeyCode::Char('J'),
+                c => c,
+            }))
         }
         Event::Mouse(m) => match m.kind {
             MouseEventKind::Down(MouseButton::Left) => Some(Input::Click { col: m.column, row: m.row }),
@@ -971,6 +978,18 @@ pub fn run() -> Res<()> {
                 };
                 if let Some(w) = wt {
                     app.files = Some(FilesView::new(w, wakes.sender()));
+                }
+            }
+            KeyCode::Char(c @ ('J' | 'K')) => {
+                let down = c == 'J';
+                let moved = match app.selected() {
+                    Some(Row::Wt(w, _)) => move_wt(&w.clone(), down),
+                    Some(Row::Repo(p, _)) => move_repo(&p.clone(), false, down),
+                    Some(Row::Folder(p, ..)) => move_repo(&p.clone(), true, down),
+                    None => Ok(()),
+                };
+                if let Err(e) = moved {
+                    app.error(&e);
                 }
             }
             KeyCode::Char('e') => if let Some(Row::Wt(w, _)) = app.selected() {

@@ -10,6 +10,7 @@ pub static ES: Text = Text {
             ("d", "borrar el worktree seleccionado"),
             ("m", "fusionar el worktree seleccionado y borrarlo"),
             ("e", "renombrar el worktree seleccionado"),
+            ("J / K, Opt+↓ / ↑", "bajar / subir el worktree, repo o carpeta"),
             ("f", "archivos del worktree seleccionado y sus cambios"),
             ("t", "nueva pestaña en el worktree seleccionado"),
             ("r", "ir al agente que te espera"),

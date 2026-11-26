@@ -11,6 +11,7 @@ Everything beyond the [README](../README.md). `orcux help` and `Opt+o` list ever
 | `f` | the files of the selected worktree and their changes |
 | `m` | merge the selected worktree and delete it |
 | `e` | rename the selected worktree |
+| `Opt+↑` / `Opt+↓`, `K` / `J` | move the selected worktree, repo or folder |
 | `Opt+w` | switch worktree, by name or pull request |
 | `Opt+r` | go to the agent that waits for you |
 | `Opt+t`, `Opt+a`, `Opt+d`, `Opt+q` | new, previous, next and close tab |

@@ -314,6 +314,54 @@ fn save_repos(r: &[PathBuf]) -> Res<()> {
     write_state("repos", &s)
 }
 
+/// Swaps the item at `i` with the one before or after it, if there is one.
+fn shift<T>(v: &mut [T], i: usize, down: bool) {
+    if let Some(j) = if down { i.checked_add(1) } else { i.checked_sub(1) }.filter(|j| *j < v.len()) {
+        v.swap(i, j);
+    }
+}
+
+/// Moves a worktree before or after the next one of its level (same repo, same parent), its children with it: the
+/// sidebar draws them in the order of the list.
+fn shift_wt(wts: &mut [Wt], w: &Wt, down: bool) {
+    let known = |wts: &[Wt], p: &str| wts.iter().any(|x| x.repo == w.repo && x.name == p);
+    let Some(me) = wts.iter().find(|x| x.is(w)).cloned() else { return };
+    let up = me.parent.as_deref().filter(|p| known(wts, p));
+    let level: Vec<usize> = (0..wts.len())
+        .filter(|&i| wts[i].repo == w.repo && wts[i].parent.as_deref().filter(|p| known(wts, p)) == up)
+        .collect();
+    let Some(i) = level.iter().position(|&i| wts[i].is(w)) else { return };
+    let mut order: Vec<usize> = level.clone();
+    shift(&mut order, i, down);
+    let moved: Vec<Wt> = order.iter().map(|&k| wts[k].clone()).collect();
+    for (&k, x) in level.iter().zip(moved) {
+        wts[k] = x;
+    }
+}
+
+pub fn move_wt(w: &Wt, down: bool) -> Res<()> {
+    change(|wts| {
+        shift_wt(wts, w, down);
+        Ok(())
+    })
+}
+
+/// Moves a repo before or after the next one of its folder, or, with `folder`, the whole folder `p`.
+pub fn move_repo(p: &Path, folder: bool, down: bool) -> Res<()> {
+    let _lock = lock();
+    read_state("repos")?;
+    let mut groups: Vec<(PathBuf, Vec<PathBuf>)> = by_folder(&repos()).into_iter().map(|g| (g.0, g.2)).collect();
+    if folder {
+        if let Some(g) = groups.iter().position(|g| g.0 == p) {
+            shift(&mut groups, g, down);
+        }
+    } else if let Some(g) = groups.iter_mut().find(|g| g.1.iter().any(|r| r == p)) {
+        let i = g.1.iter().position(|r| r == p).unwrap_or(0);
+        shift(&mut g.1, i, down);
+    }
+    save_repos(&groups.into_iter().flat_map(|g| g.1).collect::<Vec<_>>())
+}
+
 /// Takes a repo off the sidebar; nothing is deleted. Its worktrees must have left before.
 pub fn remove_repo(repo: &Path) -> Res<()> {
     let _lock = lock();
@@ -1602,6 +1650,21 @@ mod tests {
         let got = by_folder(&p(&["/w/acme/a", "/w/own/b", "/w/acme/c", "/z/own/d"]));
         let names: Vec<(&str, usize)> = got.iter().map(|g| (g.1.as_str(), g.2.len())).collect();
         assert_eq!(names, [("acme", 2), ("w/own", 1), ("z/own", 1)]);
+    }
+
+    #[test]
+    fn moving_keeps_levels() {
+        let w = |name: &str, parent: Option<&str>| Wt { repo: "/r".into(), name: name.into(), slot: 1, at: None, parent: parent.map(String::from) };
+        let mut all = vec![w("a", None), w("a1", Some("a")), w("b", None), w("a2", Some("a")), w("c", None)];
+        let names = |v: &[Wt]| v.iter().map(|w| w.name.clone()).collect::<Vec<_>>().join(" ");
+        shift_wt(&mut all, &w("b", None), false); // over a, not over a1
+        assert_eq!(names(&all), "b a1 a a2 c");
+        shift_wt(&mut all, &w("a1", Some("a")), true);
+        assert_eq!(names(&all), "b a2 a a1 c");
+        shift_wt(&mut all, &w("c", None), true); // the last one stays
+        assert_eq!(names(&all), "b a2 a a1 c");
+        let order: Vec<String> = tree(&all.iter().collect::<Vec<_>>()).into_iter().map(|(w, _)| w.name).collect();
+        assert_eq!(order, ["b", "a", "a2", "a1", "c"]);
     }
 
     #[test]

@@ -10,6 +10,7 @@ pub static EN: Text = Text {
             ("d", "delete the selected worktree"),
             ("m", "merge the selected worktree and delete it"),
             ("e", "rename the selected worktree"),
+            ("J / K, Opt+↓ / ↑", "move the selected worktree, repo or folder"),
             ("f", "files of the selected worktree and their changes"),
             ("t", "new tab in the selected worktree"),
             ("r", "go to the agent that waits for you"),
