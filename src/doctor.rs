@@ -39,7 +39,8 @@ pub fn run_all() -> Res<()> {
     let t = tr();
     let var = |k: &str| env::var(k).unwrap_or_default();
     let mut all: Vec<(Level, String)> = vec![
-        tool(first_line("tmux", &["-V"]), (3, 3), (3, 6), t.doc_no_tmux, t.doc_old_tmux),
+        // with orcux's own engine, tmux is not needed
+        if mux::own() { (Level::Good, t.doc_engine.into()) } else { tool(first_line("tmux", &["-V"]), (3, 3), (3, 6), t.doc_no_tmux, t.doc_old_tmux) },
         tool(first_line("git", &["--version"]), (2, 38), (2, 38), t.doc_no_git, ""),
         match run("gh", &["auth", "token"], None) {
             Ok(_) => (Level::Good, t.doc_gh.into()),

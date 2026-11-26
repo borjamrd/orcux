@@ -1390,6 +1390,15 @@ fn cli(a: &[&str]) -> Res<()> {
             theme::set_icons(which)?;
             restart_panes()
         }
+        ["engine"] => {
+            println!("{}", (tr().engine_now)(mux::chosen(), &mux::ENGINES.join(", ")));
+            Ok(())
+        }
+        ["engine", which] if mux::ENGINES.contains(which) => {
+            write_state("engine", which)?;
+            println!("{}", (tr().engine_now)(which, &mux::ENGINES.join(", ")));
+            Ok(())
+        }
         ["ui"] => {
             println!("{}", (tr().ui_now)(&ui_choice(), &UIS.join(", ")));
             Ok(())

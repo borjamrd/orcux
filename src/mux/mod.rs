@@ -17,9 +17,31 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Whether orcux runs on its own engine: asked for, or inside one of its panes.
+/// Whether orcux runs on its own engine: inside one of its panes, or chosen (ORCUX_ENGINE, else `orcux engine`). Inside
+/// a pane of tmux it is tmux: both can live side by side while one moves to the other.
 pub fn own() -> bool {
-    env::var("ORCUX_MUX").is_ok_and(|s| !s.is_empty()) || env::var("ORCUX_ENGINE").is_ok_and(|e| e == "own")
+    static OWN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OWN.get_or_init(|| {
+        if env::var("ORCUX_MUX").is_ok_and(|s| !s.is_empty()) {
+            return true;
+        }
+        if env::var("TMUX").is_ok() {
+            return false;
+        }
+        match env::var("ORCUX_ENGINE").as_deref() {
+            Ok("own") => true,
+            Ok("tmux") => false,
+            _ => crate::read_state("engine").is_ok_and(|e| e.trim() == "own"),
+        }
+    })
+}
+
+/// The engines that `orcux engine` chooses from.
+pub const ENGINES: [&str; 2] = ["tmux", "own"];
+
+/// The chosen engine, as `orcux engine` shows it.
+pub fn chosen() -> &'static str {
+    if own() { "own" } else { "tmux" }
 }
 
 /// Inside a pane of tmux or of the engine.
@@ -63,8 +85,12 @@ fn connect(path: &PathBuf, start: bool) -> Res<UnixStream> {
     if !start {
         return Err(format!("no server running on {}", path.display()));
     }
-    // started apart from whoever asked: its own session, no terminal
     let exe = env::current_exe().map_err(|e| e.to_string())?;
+    // on a Mac, apart from the app of the terminal: quitting it would end what it started
+    if let Some(s) = launchd(&exe, path) {
+        return Ok(s);
+    }
+    // started apart from whoever asked: its own session, no terminal
     let mut c = Command::new(exe);
     c.args(["mux-server"]).arg(path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     unsafe {
@@ -85,6 +111,49 @@ fn connect(path: &PathBuf, start: bool) -> Res<UnixStream> {
         std::thread::sleep(Duration::from_millis(10));
     }
     Err(format!("the engine did not start at {}", path.display()))
+}
+
+/// Starts the server as a job of launchd in the person's session, which gives it a place of its own: a process started
+/// from a terminal app stays in that app's group even after setsid, and macOS ends it when the app quits. The job forks
+/// the server and ends; its definition is removed once the server answers. None: not here (SSH, no GUI session, not a
+/// Mac, or ORCUX_LAUNCHD=0), and the caller starts it directly.
+fn launchd(exe: &std::path::Path, path: &PathBuf) -> Option<UnixStream> {
+    if !cfg!(target_os = "macos") || env::var_os("SSH_CONNECTION").is_some() || env::var("ORCUX_LAUNCHD").is_ok_and(|v| v == "0") {
+        return None;
+    }
+    let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let uid = unsafe { libc::getuid() };
+    let label = format!("dev.orcux.server.{}", std::process::id());
+    // the engine's environment is the one of its terminals: the one of whoever starts it, as with tmux
+    let vars: String = env::vars().filter(|(k, _)| !matches!(k.as_str(), "TMUX" | "TMUX_PANE" | "ORCUX_MUX"))
+        .map(|(k, v)| format!("<key>{}</key><string>{}</string>", esc(&k), esc(&v))).collect();
+    let plist = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array><string>{}</string><string>mux-server</string><string>{}</string></array>\
+         <key>EnvironmentVariables</key><dict>{vars}</dict><key>RunAtLoad</key><true/><key>AbandonProcessGroup</key><true/></dict></plist>\n",
+        esc(&exe.to_string_lossy()), esc(&path.to_string_lossy())
+    );
+    let dir = env::temp_dir().join(format!("orcux-launchd-{uid}"));
+    std::fs::create_dir_all(&dir).ok()?;
+    let file = dir.join(format!("{label}.plist"));
+    std::fs::write(&file, plist).ok()?;
+    let domain = format!("gui/{uid}");
+    let ok = Command::new("/bin/launchctl").args(["bootstrap", &domain]).arg(&file).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+    let mut found = None;
+    if ok {
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_secs(3) {
+            if let Ok(s) = UnixStream::connect(path) {
+                found = Some(s);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // the job forked the server and ended: only its definition is left
+        Command::new("/bin/launchctl").args(["bootout", &format!("{domain}/{label}")]).stdout(Stdio::null()).stderr(Stdio::null()).status().ok();
+    }
+    std::fs::remove_file(&file).ok();
+    found
 }
 
 /// One request to the engine: what it printed, or its error.

@@ -53,6 +53,8 @@ pub struct Text {
     pub title_switch: &'static str,
     pub window_inside: &'static str,
     pub ui_now: fn(&str, &str) -> String,
+    pub engine_now: fn(&str, &str) -> String,
+    pub doc_engine: &'static str,
     pub hint_new: &'static str,
     pub hint_add: &'static str,
     pub hint_pr: &'static str,

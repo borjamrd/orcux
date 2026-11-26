@@ -928,8 +928,15 @@ impl Server {
         }
     }
 
-    /// One command, from a control client or from a single request.
+    /// One command, from a control client or from a single request. A fault in one is that command's error: the server,
+    /// and every terminal in it, go on.
     fn exec(&mut self, words: &[String], client: Option<u32>, caller: Option<&str>) -> Out {
+        let me = std::panic::AssertUnwindSafe(&mut *self);
+        std::panic::catch_unwind(move || { let me = me; me.0.run_command(words, client, caller) })
+            .unwrap_or_else(|_| Err(format!("internal error in {}", words.first().map_or("", |w| w.as_str()))))
+    }
+
+    fn run_command(&mut self, words: &[String], client: Option<u32>, caller: Option<&str>) -> Out {
         let Some(name) = words.first() else { return Ok(String::new()) };
         // what only reads changes nothing that a subscription could show
         let reads = ["list-panes", "lsp", "list-windows", "lsw", "list-sessions", "ls", "list-clients", "lsc", "display-message", "display",
