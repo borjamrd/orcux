@@ -7,9 +7,10 @@ Git worktrees, ports and terminals for several coding agents at once, in the ter
 - **A worktree per task.** One key creates the branch, the folder, the terminal and a block of 100 ports of its own.
 - **You see who needs you.** Agents tell when they work (`●`), ask or need permission (`?`), fail (`!`) or are done (`■`), the system notifies you, and one key takes you there. Nothing in your settings is changed.
 - **Agents go on without you.** tmux runs the terminals: close orcux, or lose the connection, and come back.
+- **A window of its own.** orcux draws the window itself: the agent's terminal in a frame, tabs you click, dialogs over everything, the wheel for history and the mouse to select and copy.
 - **Your pull requests beside them**, read-only: whose turn it is, what fails, and a key to hand it to the agent.
 - **Agents that hand over work.** A CLI and a skill: an agent can start others in worktrees of their own, wait for them and read what they did.
-- **Fast.** One binary of about 1 MB. With 50 terminals at rest it starts no processes and uses about 0.1 % of a core per pane.
+- **Fast.** One binary of under 2 MB. With 50 terminals at rest it starts no processes and uses about 0.1 % of a core per pane.
 
 ## Install
 
@@ -32,7 +33,9 @@ orcux repo add
 orcux
 ```
 
-Press `n` to create a worktree, `⏎` to open it, and start your agent there. `?` lists everything else.
+Press `n` to create a worktree, `⏎` to open it, and start your agent there. `Opt+o` (or `?` in the sidebar) lists everything else.
+
+`orcux ui window` makes `orcux` open the window that orcux draws itself, the one in the image; `orcux ui classic` goes back to tmux's own. Inside tmux, `orcux` is always the classic one.
 
 | Key | |
 | --- | --- |
@@ -43,6 +46,15 @@ Press `n` to create a worktree, `⏎` to open it, and start your agent there. `?
 | `Opt+t`, `Opt+a`, `Opt+d`, `Opt+q` | new, previous, next and close tab |
 | `tab` | go to the pull requests |
 | `q` | leave; the terminals stay alive |
+
+With `orcux ui window`, the mouse too:
+
+| Mouse | |
+| --- | --- |
+| click | select a row, or the pane you work in; again on a row, open it |
+| click on a tab, on `+` | show that tab, open a new one |
+| wheel | the terminal's history; any key goes back |
+| drag | select and copy; with Shift in programs that use the mouse |
 
 ## For agents and scripts
 
@@ -72,9 +84,9 @@ Claude Code agents get this as a skill in the terminals of orcux. For others, `o
 
 `orcux notify off` turns notifications off; `all` also tells when an agent is done.
 
-## A window drawn by orcux (preview)
+## The window
 
-`orcux window` opens the same interface, drawn by orcux itself instead of tmux: the terminal in a full frame, tabs you can click, dialogs over everything, the wheel for history and the mouse to select and copy. tmux keeps running the terminals, so `orcux` (the classic interface) and `orcux window` can be opened at any time, and agents go on when either is closed. `q` in the sidebar closes it. `orcux ui window` makes it what `orcux` opens; `orcux ui classic` goes back.
+`orcux window` draws the interface itself, with the same sidebar, terminals and pull requests as the classic one: tmux keeps running them underneath, so both can be opened at any time, and agents go on when either is closed. It is new: if something looks wrong, `orcux ui classic` and tell us.
 
 ## Each repo, its needs
 

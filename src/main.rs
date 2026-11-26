@@ -168,12 +168,18 @@ pub fn tmux(args: &[&str]) -> Res<String> {
 
 /// The client of the person, with its size: the connections of `control` are clients too.
 pub fn viewer() -> Option<(String, u32, u32)> {
-    let f = "#{client_control_mode}\t#{client_activity}\t#{client_name}\t#{client_width}\t#{client_height}";
+    // the name last: a control client has no height, and the end of the answer is trimmed
+    let f = "#{client_control_mode}\t#{client_activity}\t#{client_width}\t#{client_height}\t#{client_name}";
     let all = tmux(&["list-clients", "-t", UI, "-F", f]).ok()?;
     // `orcux window` is a control client of its own; with a terminal attached too, the last one used is the person's
     let window = tmux(&["show-option", "-gqv", window::CLIENT]).unwrap_or_default();
+    pick_viewer(&all, &window)
+}
+
+/// Of those clients, the person's: not a connection of orcux, unless it is the window; the one used last.
+fn pick_viewer(all: &str, window: &str) -> Option<(String, u32, u32)> {
     let people = all.lines().filter_map(|l| {
-        let [control, at, name, w, h] = l.split('\t').collect::<Vec<_>>()[..] else { return None };
+        let [control, at, w, h, name] = l.splitn(5, '\t').collect::<Vec<_>>()[..] else { return None };
         (control != "1" || (!window.is_empty() && name == window)).then(|| (at.parse::<u64>().unwrap_or(0), name.to_string(), w.parse().unwrap_or(0), h.parse().unwrap_or(0)))
     });
     people.max_by_key(|c| c.0).map(|(_, name, w, h)| (name, w, h))
@@ -479,14 +485,36 @@ fn check_out(wt: &Wt, parent: Option<&Wt>) -> Res<()> {
             return Err((tr().branch_exists)(name));
         }
         let base = git(&parent.path(), &["rev-parse", "HEAD"])?;
-        git(repo, &["worktree", "add", "--no-track", "-b", name, p, &base])?;
+        add_worktree(repo, name, p, Some(&base))?;
     } else if exists {
-        git(repo, &["worktree", "add", p, name])?;
+        add_worktree(repo, name, p, None)?;
     } else {
         let base = if has("refs/remotes/origin/HEAD") { "origin/HEAD" } else { "HEAD" };
-        git(repo, &["worktree", "add", "--no-track", "-b", name, p, base])?;
+        add_worktree(repo, name, p, Some(base))?;
     }
     copy_includes(repo, &path)
+}
+
+/// `git worktree add`, with a new branch from `base` or with the branch that exists. Again if another worktree being
+/// made at the same moment broke it: git reads the folders of the others, and one half written fails it ("failed to
+/// read .git/worktrees/x/commondir"). By then git made the new branch: the next try takes it.
+fn add_worktree(repo: &Path, name: &str, path: &str, base: Option<&str>) -> Res<()> {
+    let mut tries = 0;
+    loop {
+        let made = tries > 0 && git(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")]).is_ok();
+        let r = match base {
+            Some(b) if !made => git(repo, &["worktree", "add", "--no-track", "-b", name, path, b]),
+            _ => git(repo, &["worktree", "add", path, name]),
+        };
+        match r {
+            Err(e) if tries < 5 && e.contains("worktrees/") && (e.contains("commondir") || e.contains("gitdir")) => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(100 * tries));
+                git(repo, &["worktree", "prune"]).ok();
+            }
+            r => return r.map(|_| ()),
+        }
+    }
 }
 
 /// Copies the local-only files listed in the main checkout's .worktreeinclude.
@@ -928,6 +956,10 @@ pub fn style_ui() -> Res<()> {
         "display-popup -E -b rounded -T '#[fg={foam}] Worktrees ' -w 60% -h 50% -s 'bg={hull},fg={foam}' -S 'bg={hull},fg={line}' \"'{}' switch\"",
         exe.display()
     );
+    let commands = format!(
+        "display-popup -E -b rounded -T '#[fg={foam}] {} ' -w 90% -h 90% -s 'bg={hull},fg={foam}' -S 'bg={hull},fg={line}' \"'{}' commands\"",
+        tr().title_commands, exe.display()
+    );
     let close = format!(
         "display-popup -E -b rounded -T '#[fg={foam}] {} ' -w 60% -h 10 -s 'bg={hull},fg={foam}' -S 'bg={hull},fg={line}' \"'{}' dialog close\"",
         tr().title_close, exe.display()
@@ -940,6 +972,8 @@ pub fn style_ui() -> Res<()> {
         (&["å", "M-a"], tab("prev")),
         (&["∂", "M-d"], tab("next")),
         (&["œ", "M-q"], close),
+        // the commands from any pane: "?" belongs to the program in the terminal (Claude Code shows its own)
+        (&["ø", "M-o"], commands),
         (&["®", "M-r"], format!("run-shell -b \"'{}' next >/dev/null 2>&1 || true\"", exe.display())),
         (&["MouseDown1Status"], tab("click #{mouse_status_range}")),
     ] {
@@ -1441,6 +1475,16 @@ fn cli(a: &[&str]) -> Res<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_person_is_the_client_used_last() {
+        // the window as the last client: tmux's answer comes trimmed, its empty height gone
+        let all = "1\t100\t80\t\tclient-1\n1\t300\t271\t\tclient-9";
+        assert_eq!(pick_viewer(all, "client-9"), Some(("client-9".into(), 271, 0)));
+        assert_eq!(pick_viewer(all, ""), None); // connections of orcux are nobody
+        let both = "0\t400\t200\t50\t/dev/ttys001\n1\t300\t271\t\tclient-9";
+        assert_eq!(pick_viewer(both, "client-9"), Some(("/dev/ttys001".into(), 200, 50)));
+    }
 
     #[test]
     fn folders() {

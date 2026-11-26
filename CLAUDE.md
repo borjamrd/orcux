@@ -18,7 +18,7 @@ It does not emulate terminals: **ratatui draws the sidebar and tmux runs the ter
 - `docs/demo.gif` is made of real screens of an isolated orcux; before recording, set a neutral prompt: the default one shows the user and the computer.
 - `orcux help`: lists the subcommands. The same table (`commands` in `src/i18n/*.rs`) feeds the sidebar's `?` dialog (`orcux commands` in a tmux popup, 158 by 46, capped to the client: the mark waves beside the list from 149 columns): every new command or shortcut goes there, in every language.
 
-## Architecture (1 dependency: ratatui)
+## Architecture (2 dependencies: ratatui, and vt100 for `orcux window`)
 
 - `src/main.rs`: CLI, git, tmux and state.
 - `src/control.rs`: a lasting connection to tmux (control mode) for the sidebar, the rail and the placeholder. `tmux()` goes through it when there is one; commands that ask many things (`show`, `tab`, `switch`) borrow one; elsewhere, and with an old tmux, it is a process.
@@ -45,7 +45,7 @@ Model:
 - Showing a worktree = `swap-pane` between its pane and the right-hand one. If the one leaving is the placeholder (empty `@orcux`), it is killed.
 - State in plain files in `~/.local/state/orcux/`: `worktrees.tsv` (repo, name, slot), `repos`, `folded` (folders and repos folded in the sidebar), `recent` (ids by last `show`) and `prs.2.tsv` (cache).
 - The sidebar takes the mouse: a click selects a row, a click on the selected one opens it (like Enter); the wheel moves.
-- Opt+t/a/d/q: new, previous, next and close tab. Opt+r: the agent that waits. Only letters whose Option character is the same on the Spanish and US layouts (Opt+x on Spanish types `∑`, which is Opt+w on US).
+- Opt+t/a/d/q: new, previous, next and close tab. Opt+r: the agent that waits. Opt+o: the commands (`?` only in the sidebar: in a terminal it is the program's, and Claude Code has its own). Only letters whose Option character is the same on the Spanish and US layouts (Opt+x on Spanish types `∑`, which is Opt+w on US).
 - Opt+w opens `orcux switch` in a popup. Terminal.app cannot send Cmd keys, and without Option as Meta it types a character (`æ` on the Spanish layout), so those characters are bound in the root table (`SWITCH_KEYS`, set by the sidebar at start). tmux key tables are global: the binding checks the session name and passes the key on elsewhere. The sidebar marks working panes with `@orcux_busy`, for processes that do not watch screens.
 - Agent states: each worktree terminal gets `CLAUDE_CODE_PLUGIN_DIRS` with a plugin that orcux writes in `~/.local/state/orcux/claude-plugin` (the user's `settings.json` is never touched). Its hooks run `orcux hook <state>` (internal), which sets the pane option `@orcux_state="<state> <since> [exact|title]"`: no third word is Claude, whose gaps `settle` fills; `exact` (OpenCode, through `OPENCODE_CONFIG_CONTENT`, never `OPENCODE_CONFIG_DIR`, where it installs packages) and `title` are believed. The sidebar corrects what no hook tells (`agent::settle`): answered or rejected question, interrupted turn, result already seen. Glyphs of an agent: `?` waits for the user, `!` failed, `■` is done (`State::Asking`, `Broken`, `Finished`); `◆`, `✕` and `✓` are only for PRs, because both are drawn on one row. Panes without a mark (other agents, or opened before) fall back to "something printed in the last 3s": the activity of their window if hidden, the captured screen if visible.
 - A yes/no dialog can come with an answer chosen (`draw_choice` + `chosen`): Enter takes it, arrows change it, y/n answer, any other key is no. Closing a tab chooses yes; what deletes work keeps `y` only.
@@ -63,13 +63,14 @@ Model:
 - A command through the connection can answer in several blocks (`if-shell`), so each one is followed by a marker. Commands with control characters, popups and those about the current client go as processes.
 - Several agents run orcux at once: state changes go through `change()` / `lock()`, and tmux changes that read and then act (`spawn`, `ensure_ui`, `show_tab`, `close_tab`) take `lock()` too. Never hold it while git works. A worktree is registered before git creates it, so its name and ports are taken. State files are replaced whole, and one that cannot be read is an error, not an empty list.
 - `swap-pane` gives a pane the window of another one, with the activity of that window: without remembering since when a pane is hidden, a working agent looked idle.
+- Several `git worktree add` at once in one repo: git reads the folders of the other worktrees, and one half written fails it ("failed to read .git/worktrees/x/commondir"). `add_worktree` tries again; by then git made the new branch, so the next try takes it instead of `-b`.
 - `rm` refuses a worktree that holds another one: git would delete it with everything inside.
 - A new terminal with something to run is marked `working <t> starting` (its `.orcux` setup) or `launched`, so that `wait` does not see "no agent" before the agent tells; they expire (30 min, 15 s).
 - `remove` checks everything that would stop git (changes, lock, submodules) before the teardown: a teardown may delete a database.
 - `run` types `agent "$(cat file)"`: the task goes in a file of mode 0600, so nothing in it means anything to the shell, and aliases still work.
 - The plugin of OpenCode starts `orcux hook` one after another: two at once could arrive in the wrong order.
 - Session targets always use `=` (exact match) and no window index: `=orcux:`. Plain `orcux` prefix-matches `orcux-bg`. The user's `~/.tmux.conf` has `base-index 1`, so `:0` breaks.
-- `run()` does `trim_end()`, which eats the trailing `\t` of the last line when `#{@orcux}` is empty. Parse with a default, never with `split_once(...)?`.
+- `run()` does `trim_end()`, which eats the trailing `\t` of the last line when `#{@orcux}` is empty. Parse with a default, never with `split_once(...)?`. Put a field that is never empty last: a control client has no `client_height`, and when `orcux window` was the last client its line lost a field, so dialogs found nobody to show them to.
 - `send` waits 150 ms between the text and Enter: TUIs like claude treat text+Enter in one burst as a paste.
 - Pane titles (`pane-border-status`) cannot hold the frame or the tabs: tmux draws two cells of border before each one, a click on them gives no mouse event at all, and `MouseDown1Border` has no `mouse_x`. Only the status line has ranges (`range=user|X`): that is why the top row is the status line.
 - tmux applies `status-bg`/`status-fg` over `status-style` when they are not `default`: a `set -g status-bg black` in the user's config painted the top row. The session sets both to `default`.

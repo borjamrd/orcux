@@ -27,6 +27,7 @@ pub static ES: Text = Text {
             ("Opt+t", "nueva pestaña en el worktree visible"),
             ("Opt+a / Opt+d", "pestaña anterior / siguiente"),
             ("Opt+q", "cerrar la pestaña"),
+            ("Opt+o", "ver los comandos disponibles"),
         ]),
         ("Panel de PRs", &[
             ("⏎ / clic", "ver la PR"),

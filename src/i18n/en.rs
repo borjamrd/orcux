@@ -27,6 +27,7 @@ pub static EN: Text = Text {
             ("Opt+t", "new tab in the visible worktree"),
             ("Opt+a / Opt+d", "previous / next tab"),
             ("Opt+q", "close the tab"),
+            ("Opt+o", "show the available commands"),
         ]),
         ("PR panel", &[
             ("⏎ / click", "view the PR"),
