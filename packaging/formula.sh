@@ -13,7 +13,6 @@ cat <<EOF
 class Orcux < Formula
   desc "Git worktrees, ports and terminals for several coding agents at once"
   homepage "https://github.com/borjamrd/orcux"
-  version "$version"
   license "MIT"
 
   on_macos do

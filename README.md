@@ -35,6 +35,12 @@ Or do it yourself:
 curl -fsSL https://raw.githubusercontent.com/borjamrd/orcux/master/packaging/install.sh | sh
 ```
 
+Or with Homebrew (version 7 asks you to trust a tap first):
+
+```sh
+brew trust --formula borjamrd/tap/orcux && brew install borjamrd/tap/orcux
+```
+
 macOS and Linux. Needs git; [gh](https://cli.github.com) adds your pull requests.
 
 ## Use
