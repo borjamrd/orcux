@@ -825,7 +825,14 @@ fn poll_input(ms: u64) -> Option<Input> {
 fn input(e: Event) -> Option<Input> {
     match e {
         Event::Key(k) if k.kind == KeyEventKind::Press => {
-            Some(Input::Key(if k.modifiers.contains(KeyModifiers::CONTROL) { KeyCode::Esc } else { k.code }))
+            // Opt+↑ / ↓ move the selected row, as K / J do
+            let alt = k.modifiers.contains(KeyModifiers::ALT);
+            Some(Input::Key(match k.code {
+                _ if k.modifiers.contains(KeyModifiers::CONTROL) => KeyCode::Esc,
+                KeyCode::Up if alt => KeyCode::Char('K'),
+                KeyCode::Down if alt => KeyCode::Char('J'),
+                c => c,
+            }))
         }
         Event::Mouse(m) => match m.kind {
             MouseEventKind::Down(MouseButton::Left) => Some(Input::Click { col: m.column, row: m.row }),
@@ -973,6 +980,22 @@ pub fn run() -> Res<()> {
                     app.files = Some(FilesView::new(w, wakes.sender()));
                 }
             }
+            KeyCode::Char(c @ ('J' | 'K')) => {
+                let down = c == 'J';
+                let moved = match app.selected() {
+                    Some(Row::Wt(w, _)) => move_wt(&w.clone(), down),
+                    Some(Row::Repo(p, _)) => move_repo(&p.clone(), false, down),
+                    Some(Row::Folder(p, ..)) => move_repo(&p.clone(), true, down),
+                    None => Ok(()),
+                };
+                if let Err(e) = moved {
+                    app.error(&e);
+                }
+            }
+            KeyCode::Char('e') => if let Some(Row::Wt(w, _)) = app.selected() {
+                let id = w.id();
+                app.popup(tr().title_rename, DIALOG, &["dialog", "rename", &id]);
+            },
             KeyCode::Char('N') => if let Some(Row::Wt(w, _)) = app.selected() {
                 let id = w.id();
                 app.popup(tr().title_child, DIALOG, &["dialog", "child", &id]);
@@ -1941,6 +1964,36 @@ pub fn dialog_new(repo: &Path, parent: Option<&Wt>) -> Res<()> {
                     draw_dialog(term, lines(Line::from(tr().creating).fg(CURRENT)), "")?;
                     match create_from(repo, &name, None, parent).and_then(|w| show(&w)) {
                         Ok(()) => return Ok(()),
+                        Err(e) => err = short(&e), // stay open to fix the name
+                    }
+                }
+                _ => {}
+            }
+        }
+    })
+}
+
+pub fn dialog_rename(w: &Wt) -> Res<()> {
+    dialog(|term| {
+        // a program in its terminals is told at once, not after typing
+        let (mut name, mut err) = (w.name.clone(), renamable(w).err().unwrap_or_default());
+        let what = if w.at.is_some() { tr().rename_imported } else { tr().rename_moves };
+        loop {
+            let lines = |status: Line<'static>| vec![
+                Line::from(vec![tag(tr().label_name).fg(MUTED), format!("{name}▏").into()]),
+                Line::from(what).fg(MUTED),
+                Line::default(),
+                status,
+            ];
+            draw_dialog(term, lines(Line::from(err.clone()).fg(CORAL)), tr().hint_rename)?;
+            match key()? {
+                Some(KeyCode::Esc) => return Ok(()),
+                Some(KeyCode::Backspace) => { name.pop(); }
+                Some(KeyCode::Char(c)) if !c.is_whitespace() => name.push(c),
+                Some(KeyCode::Enter) if !name.is_empty() => {
+                    draw_dialog(term, lines(Line::from(tr().renaming).fg(CURRENT)), "")?;
+                    match rename(w, &name) {
+                        Ok(_) => return Ok(()),
                         Err(e) => err = short(&e), // stay open to fix the name
                     }
                 }

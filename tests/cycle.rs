@@ -289,3 +289,37 @@ fn a_new_language_keeps_the_sidebar() {
     // restarted in the new language, as themselves
     until("the sidebar and the panel again", || screen("__sidebar").contains("alpha") && screen("__prs").contains("por revisar"));
 }
+
+#[test]
+fn a_rename_moves_the_folder_and_the_branch_and_keeps_its_children() {
+    let Some(lab) = ready() else { return };
+    let repo = lab.dir.join("repo");
+    for args in [&["new", "a", "--repo"][..], &["new", "b", "--parent", "repo/a", "--repo"]] {
+        let o = any(&lab, &[args, &[repo.to_str().unwrap()]].concat());
+        assert!(o.status.success(), "{}", says(&o));
+    }
+    // a program in its terminals: it would go on in a folder that moved
+    any(&lab, &["send", "repo/a", "sleep 30"]);
+    until("it runs", || lab.tmux(&["list-panes", "-a", "-F", "#{@orcux} #{pane_current_command}"]).contains("repo/a sleep"));
+    let o = any(&lab, &["rename", "repo/a", "c"]);
+    assert!(!o.status.success() && says(&o).contains("sleep"), "{}", says(&o));
+    let pane = lab.tmux(&["list-panes", "-a", "-F", "#{pane_id} #{@orcux}"]);
+    let pane = pane.lines().find(|l| l.ends_with(" repo/a")).unwrap().split(' ').next().unwrap().to_string();
+    lab.tmux(&["send-keys", "-t", &pane, "C-c"]);
+    until("it stops", || !lab.tmux(&["list-panes", "-a", "-F", "#{@orcux} #{pane_current_command}"]).contains("repo/a sleep"));
+
+    let o = any(&lab, &["rename", "repo/a", "c"]);
+    assert!(o.status.success(), "{}", says(&o));
+    assert!(wt(&lab, "c").exists() && !wt(&lab, "a").exists());
+    assert_eq!(git(&wt(&lab, "c"), &["branch", "--show-current"]), "c");
+    let state = fs::read_to_string(lab.dir.join("home/.local/state/orcux/worktrees.tsv")).unwrap();
+    assert!(state.lines().any(|l| l.contains("\tb\t") && l.ends_with("\tc")), "{state}");
+    // its terminal is a new shell, where it is now, with the new name
+    any(&lab, &["send", "repo/c", "echo id=$ORCUX_ID at=$PWD"]);
+    until("the new shell answers", || says(&any(&lab, &["read", "repo/c", "5"])).contains("id=repo/c at="));
+    assert!(says(&any(&lab, &["read", "repo/c", "5"])).contains("/c"));
+    // a name that is taken, and the same name, change nothing
+    assert!(!any(&lab, &["rename", "repo/c", "b"]).status.success());
+    assert!(any(&lab, &["rename", "repo/c", "c"]).status.success());
+    assert!(wt(&lab, "c").exists() && wt(&lab, "b").exists());
+}

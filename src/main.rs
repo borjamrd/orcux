@@ -314,6 +314,54 @@ fn save_repos(r: &[PathBuf]) -> Res<()> {
     write_state("repos", &s)
 }
 
+/// Swaps the item at `i` with the one before or after it, if there is one.
+fn shift<T>(v: &mut [T], i: usize, down: bool) {
+    if let Some(j) = if down { i.checked_add(1) } else { i.checked_sub(1) }.filter(|j| *j < v.len()) {
+        v.swap(i, j);
+    }
+}
+
+/// Moves a worktree before or after the next one of its level (same repo, same parent), its children with it: the
+/// sidebar draws them in the order of the list.
+fn shift_wt(wts: &mut [Wt], w: &Wt, down: bool) {
+    let known = |wts: &[Wt], p: &str| wts.iter().any(|x| x.repo == w.repo && x.name == p);
+    let Some(me) = wts.iter().find(|x| x.is(w)).cloned() else { return };
+    let up = me.parent.as_deref().filter(|p| known(wts, p));
+    let level: Vec<usize> = (0..wts.len())
+        .filter(|&i| wts[i].repo == w.repo && wts[i].parent.as_deref().filter(|p| known(wts, p)) == up)
+        .collect();
+    let Some(i) = level.iter().position(|&i| wts[i].is(w)) else { return };
+    let mut order: Vec<usize> = level.clone();
+    shift(&mut order, i, down);
+    let moved: Vec<Wt> = order.iter().map(|&k| wts[k].clone()).collect();
+    for (&k, x) in level.iter().zip(moved) {
+        wts[k] = x;
+    }
+}
+
+pub fn move_wt(w: &Wt, down: bool) -> Res<()> {
+    change(|wts| {
+        shift_wt(wts, w, down);
+        Ok(())
+    })
+}
+
+/// Moves a repo before or after the next one of its folder, or, with `folder`, the whole folder `p`.
+pub fn move_repo(p: &Path, folder: bool, down: bool) -> Res<()> {
+    let _lock = lock();
+    read_state("repos")?;
+    let mut groups: Vec<(PathBuf, Vec<PathBuf>)> = by_folder(&repos()).into_iter().map(|g| (g.0, g.2)).collect();
+    if folder {
+        if let Some(g) = groups.iter().position(|g| g.0 == p) {
+            shift(&mut groups, g, down);
+        }
+    } else if let Some(g) = groups.iter_mut().find(|g| g.1.iter().any(|r| r == p)) {
+        let i = g.1.iter().position(|r| r == p).unwrap_or(0);
+        shift(&mut g.1, i, down);
+    }
+    save_repos(&groups.into_iter().flat_map(|g| g.1).collect::<Vec<_>>())
+}
+
 /// Takes a repo off the sidebar; nothing is deleted. Its worktrees must have left before.
 pub fn remove_repo(repo: &Path) -> Res<()> {
     let _lock = lock();
@@ -648,6 +696,88 @@ pub fn remove_then(w: &Wt, force: bool, config: &config::Config, last: impl Fn()
         Ok(())
     })?;
     Ok(())
+}
+
+/// Why it cannot be renamed now: a program in its terminals would go on in a folder that moved (agents keep their
+/// folder as a path, and Claude Code its conversations by it). Shells are started again where it is.
+pub fn renamable(w: &Wt) -> Res<()> {
+    match tabs(&w.id()).into_iter().find(|p| !p.shell) {
+        Some(p) => Err((tr().rename_busy)(&w.id(), &p.cmd)),
+        None => Ok(()),
+    }
+}
+
+/// Another name: its folder follows, and its branch when it is still named after it and was never pushed (a pushed
+/// one may have a PR). An imported one only changes its name here.
+pub fn rename(w: &Wt, new: &str) -> Res<Wt> {
+    let new = new.trim();
+    if new.is_empty() || new == w.name {
+        return Ok(w.clone());
+    }
+    if new.contains(['/', ':']) || new.contains(char::is_whitespace) {
+        return Err(tr().bad_name.into());
+    }
+    renamable(w)?;
+    let (old, ours, branch) = (w.id(), w.at.is_none(), w.branch()); // read where it is now
+    let to = Wt { name: new.into(), ..w.clone() };
+    if ours && to.path().exists() {
+        return Err((tr().exists)(&tilde(&to.path())));
+    }
+    let relabel = |wts: &mut Vec<Wt>, from: &str, into: &str| {
+        for x in wts.iter_mut().filter(|x| x.repo == w.repo) {
+            if x.name == from {
+                x.name = into.into();
+            }
+            if x.parent.as_deref() == Some(from) {
+                x.parent = Some(into.into());
+            }
+        }
+    };
+    // the new name is taken before git works, as when it is created
+    change(|wts| {
+        if let Some(x) = wts.iter().find(|x| x.id() == to.id()) {
+            return Err(if x.repo == w.repo { (tr().exists)(new) } else { (tr().id_taken)(&x.id()) });
+        }
+        if !wts.iter().any(|x| x.is(w)) {
+            return Err((tr().no_worktree)(&old));
+        }
+        relabel(wts, &w.name, new);
+        Ok(())
+    })?;
+    if ours && w.path().exists() {
+        let (from, into) = (w.path(), to.path());
+        let paths = from.to_str().zip(into.to_str()).ok_or_else(|| tr().non_utf8.to_string());
+        if let Err(e) = paths.and_then(|(a, b)| git(&w.repo, &["worktree", "move", a, b])) {
+            change(|wts| {
+                relabel(wts, new, &w.name);
+                Ok(())
+            })?;
+            return Err(e);
+        }
+        let has = |r: &str| git(&w.repo, &["rev-parse", "--verify", "--quiet", r]).is_ok();
+        if branch.as_deref() == Some(w.name.as_str())
+            && !has(&format!("refs/remotes/origin/{}", w.name))
+            && !has(&format!("refs/heads/{new}"))
+            && let Err(e) = git(&w.repo, &["branch", "-m", &w.name, new])
+        {
+            warn(&e); // renamed all the same; the branch keeps its name
+        }
+    }
+    let _lock = lock();
+    let plain = |s: &str| s.replace('#', "##"); // tmux expands formats in -c
+    let path = plain(&to.path().to_string_lossy());
+    for p in tabs(&old) {
+        tmux(&["set-option", "-p", "-t", &p.pane, "@orcux", &to.id()])?;
+        // its shell is in a folder that moved, with the old ORCUX_ID: a new one, where it is now
+        let mut a = vec!["respawn-pane".to_string(), "-k".into(), "-t".into(), p.pane.clone(), "-c".into(), path.clone()];
+        for e in to.env() {
+            a.extend(["-e".into(), e]);
+        }
+        tmux(&a.iter().map(String::as_str).collect::<Vec<_>>()).ok();
+    }
+    let recent: Vec<String> = recent().into_iter().map(|x| if x == old { to.id() } else { x }).collect();
+    write_state("recent", &recent.join("\n")).ok();
+    Ok(to)
 }
 
 /// The terminals of a worktree that is gone. Its own goes last: with it, this process ends.
@@ -1338,6 +1468,8 @@ fn cli(a: &[&str]) -> Res<()> {
         ["conflicts", rest @ ..] => std::process::exit(merge::conflicts(rest.first().copied())?),
         ["restore", rest @ ..] => restore::cmd(rest),
         ["dialog", "merge", id] => tui::dialog_merge(&find(Some(id))?),
+        ["skill", "install"] => agent::install_skill(),
+        ["skill", "remove"] => agent::remove_skill(),
         ["skill"] => {
             print!("{}", agent::SKILL);
             Ok(())
@@ -1365,6 +1497,7 @@ fn cli(a: &[&str]) -> Res<()> {
         ["dialog", "add", base] => tui::dialog_add(Path::new(base)),
         ["dialog", "rmrepo", repo] => tui::dialog_rm_repo(Path::new(repo)),
         ["dialog", "rm", id] => tui::dialog_rm(&find(Some(id))?),
+        ["dialog", "rename", id] => tui::dialog_rename(&find(Some(id))?),
         ["dialog", "pr", repo, branch, label] => tui::dialog_pr(Path::new(repo), branch, label),
         ["dialog", "view", url] => tui::dialog_view(url),
         ["dialog", "diff", dir, path] => files::show(Path::new(dir), path),
@@ -1382,6 +1515,11 @@ fn cli(a: &[&str]) -> Res<()> {
             Ok(())
         }
         ["rm", q, rest @ ..] => remove(&find(Some(q))?, rest.contains(&"--force")),
+        ["rename", q, new] => {
+            let w = rename(&find(Some(q))?, new)?;
+            println!("{}  {}", w.id(), w.path().display());
+            Ok(())
+        }
         ["import", rest @ ..] if rest.iter().any(|p| *p != "--yes") => {
             let paths: Vec<&str> = rest.iter().copied().filter(|p| *p != "--yes").collect();
             import(&paths, rest.contains(&"--yes"))
@@ -1512,6 +1650,21 @@ mod tests {
         let got = by_folder(&p(&["/w/acme/a", "/w/own/b", "/w/acme/c", "/z/own/d"]));
         let names: Vec<(&str, usize)> = got.iter().map(|g| (g.1.as_str(), g.2.len())).collect();
         assert_eq!(names, [("acme", 2), ("w/own", 1), ("z/own", 1)]);
+    }
+
+    #[test]
+    fn moving_keeps_levels() {
+        let w = |name: &str, parent: Option<&str>| Wt { repo: "/r".into(), name: name.into(), slot: 1, at: None, parent: parent.map(String::from) };
+        let mut all = vec![w("a", None), w("a1", Some("a")), w("b", None), w("a2", Some("a")), w("c", None)];
+        let names = |v: &[Wt]| v.iter().map(|w| w.name.clone()).collect::<Vec<_>>().join(" ");
+        shift_wt(&mut all, &w("b", None), false); // over a, not over a1
+        assert_eq!(names(&all), "b a1 a a2 c");
+        shift_wt(&mut all, &w("a1", Some("a")), true);
+        assert_eq!(names(&all), "b a2 a a1 c");
+        shift_wt(&mut all, &w("c", None), true); // the last one stays
+        assert_eq!(names(&all), "b a2 a a1 c");
+        let order: Vec<String> = tree(&all.iter().collect::<Vec<_>>()).into_iter().map(|(w, _)| w.name).collect();
+        assert_eq!(order, ["b", "a", "a2", "a1", "c"]);
     }
 
     #[test]

@@ -53,6 +53,8 @@ pub fn run_all() -> Res<()> {
     if cfg!(target_os = "macos") && (var("TERM_PROGRAM") == "Apple_Terminal" || var("TERM_PROGRAM") == "tmux") {
         all.push((Level::Note, t.doc_option.into()));
     }
+    // agents other than Claude Code find orcux only through the shared skill
+    all.push(if agent::shared_skill().exists() { (Level::Good, t.doc_skill.into()) } else { (Level::Note, t.doc_no_skill.into()) });
     let state = state_dir();
     all.push(match fs::write(state.join(".doctor"), "").and_then(|_| fs::remove_file(state.join(".doctor"))) {
         Ok(_) => (Level::Good, tilde(&state)),

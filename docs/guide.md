@@ -10,6 +10,8 @@ Everything beyond the [README](../README.md). `orcux help` and `Opt+o` list ever
 | `⏎` | open the selected worktree |
 | `f` | the files of the selected worktree and their changes |
 | `m` | merge the selected worktree and delete it |
+| `e` | rename the selected worktree |
+| `Opt+↑` / `Opt+↓`, `K` / `J` | move the selected worktree, repo or folder |
 | `Opt+w` | switch worktree, by name or pull request |
 | `Opt+r` | go to the agent that waits for you |
 | `Opt+t`, `Opt+a`, `Opt+d`, `Opt+q` | new, previous, next and close tab |
@@ -37,11 +39,14 @@ orcux read fix-the-login-redirect 40             # the end of its terminal
 orcux send fix-the-login-redirect "go on"        # types it, with Enter
 orcux ls --json                                  # every worktree and what its agents do
 orcux rm fix-the-login-redirect                  # keeps the branch
+orcux rename fix-the-login-redirect login        # its folder and, if never pushed, its branch
 ```
+
+A rename waits until only shells run in its terminals (they start again in the new folder): an agent would go on in the old path. What its `.orcux` made with the old name, such as a database, keeps it.
 
 `wait` ends with 0 when the agent is done, 2 when it asks something or needs permission, 3 when it failed, 4 on timeout and 5 when there is no agent. Several commands can run at once.
 
-Claude Code agents get this as a skill in the terminals of orcux. For others, `orcux skill` prints it.
+Claude Code agents get this as a skill in the terminals of orcux. For the others (Antigravity, Codex, Gemini CLI…), `orcux skill install` puts it in `~/.agents/skills/orcux/`, where they look, and orcux keeps it up to date; `orcux skill remove` takes it away. `orcux skill` prints it.
 
 ## Agents
 

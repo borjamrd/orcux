@@ -43,6 +43,7 @@ pub struct Text {
     // dialogs
     pub title_commands: &'static str,
     pub title_new: &'static str,
+    pub title_rename: &'static str,
     pub title_child: &'static str,
     pub title_add: &'static str,
     pub title_error: &'static str,
@@ -51,12 +52,17 @@ pub struct Text {
     pub title_pr: &'static str,
     pub title_close: &'static str,
     pub title_switch: &'static str,
+    pub skill_installed: fn(&str) -> String,
+    pub skill_failed: fn(&str) -> String,
+    pub doc_skill: &'static str,
+    pub doc_no_skill: &'static str,
     pub detached: &'static str,
     pub window_inside: &'static str,
     pub ui_now: fn(&str, &str) -> String,
     pub engine_now: fn(&str, &str) -> String,
     pub doc_engine: &'static str,
     pub hint_new: &'static str,
+    pub hint_rename: &'static str,
     pub hint_add: &'static str,
     pub hint_pr: &'static str,
     pub hint_force: &'static str,
@@ -81,6 +87,10 @@ pub struct Text {
     pub label_branch: &'static str,
     pub label_port: &'static str,
     pub creating: &'static str,
+    pub renaming: &'static str,
+    /// what else changes with the name of one created by orcux, and of one imported
+    pub rename_moves: &'static str,
+    pub rename_imported: &'static str,
     pub fetching: &'static str,
     pub deleting: &'static str,
     // before and after the worktree, which goes in bold
@@ -169,6 +179,8 @@ pub struct Text {
     pub no_worktree_here: &'static str,
     pub ambiguous: &'static str,
     pub exists: fn(&str) -> String,
+    /// a worktree and the program that runs in one of its terminals
+    pub rename_busy: fn(&str, &str) -> String,
     pub branch_exists: fn(&str) -> String,
     pub non_utf8: &'static str,
     pub not_running: &'static str,
@@ -330,7 +342,7 @@ mod tests {
                 assert!(keys(&k) <= 44, "{lang}: rail {k:?}");
             }
             assert!(width(t.k_yes) + width(t.k_no) + width(t.hint_choose) + width(t.hint_force_key) + 10 <= 60, "{lang}: choice");
-            for s in [t.hint_new, t.hint_pr, t.hint_force, t.hint_any, t.kept_rm, t.kept_unregister, t.kept_close, t.kept_repo, t.hint_add, t.fetching] {
+            for s in [t.hint_new, t.hint_rename, t.renaming, t.rename_moves, t.rename_imported, t.hint_pr, t.hint_force, t.hint_any, t.kept_rm, t.kept_unregister, t.kept_close, t.kept_repo, t.hint_add, t.fetching] {
                 assert!(width(s) <= 60, "{lang}: {s}");
             }
             for s in [t.label_repo, t.label_parent, t.label_name, t.label_branch, t.label_port] {
