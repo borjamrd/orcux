@@ -12,7 +12,7 @@ Varios agentes de código a la vez, cada uno en su propio worktree de git. Ultra
 - **Mira quién te necesita**: trabajando `●`, pregunta `?`, ha fallado `!`, ha terminado `■`. Una tecla te lleva allí.
 - **Los agentes siguen sin ti**: cierra orcux y vuelve.
 - **Recoge el trabajo**: archivos y diffs, conflictos, merge, y tus pull requests al lado.
-- **Rápido y ligero**: un binario de menos de 2 MB, sin tmux.
+- **Rápido y ligero**: un binario de unos 2 MB, sin tmux.
 
 | 10 worktrees, una terminal cada uno, en reposo | orcux | otra TUI (un multiplexor en Rust) | otra app (Electron) | diferencia |
 | --- | --- | --- | --- | --- |
