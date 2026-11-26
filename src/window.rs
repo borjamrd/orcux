@@ -265,10 +265,8 @@ fn after_seed(b: &[u8]) -> &[u8] {
     let csi = b.strip_prefix(b"[").unwrap_or(b);
     let params = csi.iter().take_while(|c| b"0123456789;:?<=>".contains(c)).count();
     // without its "[", only what cannot be text: several parameters ("12 files" stays)
-    if csi.len() < b.len() || csi[..params].contains(&b';') {
-        if let Some(f) = csi.get(params) && (0x40..=0x7e).contains(f) {
-            return &csi[params + 1..];
-        }
+    if (csi.len() < b.len() || csi[..params].contains(&b';')) && let Some(f) = csi.get(params) && (0x40..=0x7e).contains(f) {
+        return &csi[params + 1..];
     }
     // the rest of a title or another string: short, on one line, ended by BEL or ST
     let end = b.iter().take(512).position(|c| *c == 0x07 || *c == b'\n').filter(|i| b[*i] == 0x07)
@@ -524,7 +522,7 @@ impl Window {
                     if let Some(p) = &mut s.parser {
                         let b = if std::mem::take(&mut s.fresh) { after_seed(&b) } else { &b[..] };
                         p.process(b);
-                        if leaves_alternate(&b) {
+                        if leaves_alternate(b) {
                             self.resync(link, &id)?;
                         }
                     }

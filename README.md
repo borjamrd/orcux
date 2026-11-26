@@ -74,7 +74,7 @@ Claude Code agents get this as a skill in the terminals of orcux. For others, `o
 
 ## A window drawn by orcux (preview)
 
-`orcux window` opens the same interface, drawn by orcux itself instead of tmux: the terminal in a full frame, tabs you can click, dialogs over everything, the wheel for history and the mouse to select and copy. tmux keeps running the terminals, so `orcux` (the classic interface) and `orcux window` can be opened at any time, and agents go on when either is closed. `q` in the sidebar closes it.
+`orcux window` opens the same interface, drawn by orcux itself instead of tmux: the terminal in a full frame, tabs you can click, dialogs over everything, the wheel for history and the mouse to select and copy. tmux keeps running the terminals, so `orcux` (the classic interface) and `orcux window` can be opened at any time, and agents go on when either is closed. `q` in the sidebar closes it. `orcux ui window` makes it what `orcux` opens; `orcux ui classic` goes back.
 
 ## Each repo, its needs
 

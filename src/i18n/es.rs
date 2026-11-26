@@ -43,6 +43,7 @@ pub static ES: Text = Text {
         ("Terminal", &[
             ("orcux", "abrir la interfaz (sidebar + terminal)"),
             ("orcux window", "la interfaz dibujada por el propio orcux (avance)"),
+            ("orcux ui [classic|window]", "qué interfaz abre `orcux`"),
             ("orcux new <nombre> [--repo P] [--cmd C]", "crear worktree, puertos y terminal"),
             ("orcux rm <wt> [--force]", "borrar el worktree (conserva la rama)"),
             ("orcux merge <wt> [--into B] [--check]", "fusionar su rama y borrarlo (no sube nada)"),
@@ -119,6 +120,7 @@ pub static ES: Text = Text {
     title_pr: "Crear worktree",
     title_close: "Cerrar pestaña",
     title_switch: "Worktrees",
+    ui_now: |now, all| format!("interfaz: {now} ({all})"),
     hint_new: "⏎ crear  esc cancelar",
     hint_add: "⏎ añadir  tab completar  esc cancelar",
     hint_pr: "⏎ crear y abrir  esc cancelar",

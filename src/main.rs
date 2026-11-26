@@ -1234,7 +1234,20 @@ pub fn set_tab_bar(bar: &str) {
     tmux(&["set-option", "-t", &format!("{UI}:"), "@orcux_bar", bar]).ok();
 }
 
+/// The interface that `orcux` opens: ORCUX_UI, else what `orcux ui` saved, else the classic one.
+fn ui_choice() -> String {
+    env::var("ORCUX_UI").ok().filter(|u| UIS.contains(&u.as_str()))
+        .or_else(|| read_state("ui").ok().map(|s| s.trim().to_string()).filter(|u| UIS.contains(&u.as_str())))
+        .unwrap_or_else(|| UIS[0].into())
+}
+
+const UIS: [&str; 2] = ["classic", "window"];
+
 fn attach() -> Res<()> {
+    // inside tmux the window would be drawn inside a pane: the classic switch is what fits there
+    if ui_choice() == "window" && env::var("TMUX").is_err() {
+        return window::run();
+    }
     ensure_ui()?;
     if env::var("TMUX").is_ok() {
         tmux(&["switch-client", "-t", UI]).map(|_| ())
@@ -1341,6 +1354,15 @@ fn cli(a: &[&str]) -> Res<()> {
         ["icons", which] if theme::ICONS.contains(which) => {
             theme::set_icons(which)?;
             restart_panes()
+        }
+        ["ui"] => {
+            println!("{}", (tr().ui_now)(&ui_choice(), &UIS.join(", ")));
+            Ok(())
+        }
+        ["ui", which] if UIS.contains(which) => {
+            write_state("ui", which)?;
+            println!("{}", (tr().ui_now)(which, &UIS.join(", ")));
+            Ok(())
         }
         ["lang"] => {
             println!("{}", (tr().lang_now)(i18n::code(), &i18n::codes()));

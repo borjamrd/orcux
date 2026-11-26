@@ -51,6 +51,7 @@ pub struct Text {
     pub title_pr: &'static str,
     pub title_close: &'static str,
     pub title_switch: &'static str,
+    pub ui_now: fn(&str, &str) -> String,
     pub hint_new: &'static str,
     pub hint_add: &'static str,
     pub hint_pr: &'static str,
