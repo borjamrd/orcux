@@ -8,9 +8,10 @@ Everything beyond the [README](../README.md). `orcux help` and `Opt+o` list ever
 | --- | --- |
 | `n` / `N` | new worktree / new one from the selected one |
 | `⏎` | open the selected worktree |
-| `f` | the files of the selected worktree and their changes |
+| `f` | the files of the selected worktree and their changes; Enter shows a diff, where `c` comments a line and the comments go to its agent on closing, without sending them |
 | `m` | merge the selected worktree and delete it |
 | `e` | rename the selected worktree |
+| `P` | push its branch and open its pull request |
 | `Opt+↑` / `Opt+↓`, `K` / `J` | move the selected worktree, repo or folder |
 | `Opt+w` | switch worktree, by name or pull request |
 | `Opt+r` | what waits for you: with one agent, straight to it; with more, or with pull requests of yours, the list (oldest first) |
@@ -104,7 +105,9 @@ orcux remembers which terminals were open and which conversations their agents h
 
 ## Pull requests
 
-With [gh](https://cli.github.com) logged in, the right panel shows your open pull requests, read-only: whose turn it is, what fails, and a key to hand it to the agent.
+With [gh](https://cli.github.com) logged in, the right panel shows your open pull requests: whose turn it is, what fails, and a key to hand it to the agent.
+
+`P` on a worktree, or `orcux pr <wt>`, pushes its branch and opens its pull request: into its parent's branch for a child already on GitHub, else into the main one. Its title and description come from its commits (one commit: its message; several: the branch name and their list), as the account of gh that can push there. It asks first, starting on no; one already open is shown instead. `orcux pr <wt> --check` tells what it would open.
 
 ## Languages
 

@@ -1003,6 +1003,10 @@ pub fn run() -> Res<()> {
                     app.error(&e);
                 }
             }
+            KeyCode::Char('P') => if let Some(Row::Wt(w, _)) = app.selected() {
+                let id = w.id();
+                app.popup(tr().title_open_pr, (76, 13), &["dialog", "openpr", &id]);
+            },
             KeyCode::Char('e') => if let Some(Row::Wt(w, _)) = app.selected() {
                 let id = w.id();
                 app.popup(tr().title_rename, DIALOG, &["dialog", "rename", &id]);
@@ -1935,7 +1939,7 @@ pub fn commands() -> Res<()> {
 
 // ---------- small dialogs: each one is an `orcux dialog ...` process inside a tmux popup ----------
 
-fn dialog(body: impl FnOnce(&mut ratatui::DefaultTerminal) -> Res<()>) -> Res<()> {
+pub(crate) fn dialog(body: impl FnOnce(&mut ratatui::DefaultTerminal) -> Res<()>) -> Res<()> {
     DRAWING.store(true, Ordering::Relaxed);
     let mut term = ratatui::init();
     let res = body(&mut term);
@@ -1943,7 +1947,7 @@ fn dialog(body: impl FnOnce(&mut ratatui::DefaultTerminal) -> Res<()>) -> Res<()
     res
 }
 
-fn draw_dialog(term: &mut ratatui::DefaultTerminal, lines: Vec<Line>, hint: &str) -> Res<()> {
+pub(crate) fn draw_dialog(term: &mut ratatui::DefaultTerminal, lines: Vec<Line>, hint: &str) -> Res<()> {
     term.draw(|f| {
         let area = f.area().inner(Margin::new(1, 0));
         let [body, foot] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
@@ -1954,7 +1958,7 @@ fn draw_dialog(term: &mut ratatui::DefaultTerminal, lines: Vec<Line>, hint: &str
 
 /// A dialog that asks yes or no, with one of them already chosen: Enter takes it, y and n answer, arrows change it,
 /// any other key is no.
-fn draw_choice(term: &mut ratatui::DefaultTerminal, lines: Vec<Line>, yes: bool, extra: &str) -> Res<()> {
+pub(crate) fn draw_choice(term: &mut ratatui::DefaultTerminal, lines: Vec<Line>, yes: bool, extra: &str) -> Res<()> {
     term.draw(|f| {
         let area = f.area().inner(Margin::new(1, 0));
         let [body, foot] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
@@ -1972,7 +1976,7 @@ fn draw_choice(term: &mut ratatui::DefaultTerminal, lines: Vec<Line>, yes: bool,
 }
 
 /// The answer to a dialog of `draw_choice`, if the key gives one.
-fn chosen(k: KeyCode, yes: &mut bool) -> Option<bool> {
+pub(crate) fn chosen(k: KeyCode, yes: &mut bool) -> Option<bool> {
     match k {
         KeyCode::Enter => Some(*yes),
         KeyCode::Char('y' | 's') => Some(true),
@@ -1985,7 +1989,7 @@ fn chosen(k: KeyCode, yes: &mut bool) -> Option<bool> {
 }
 
 /// Next key press, or None if something else happened (resize: redraw). Ctrl-C and Meta keys count as Esc.
-fn key() -> Res<Option<KeyCode>> {
+pub(crate) fn key() -> Res<Option<KeyCode>> {
     Ok(match event::read().map_err(|e| e.to_string())? {
         Event::Key(k) if k.kind == KeyEventKind::Press => {
             Some(if k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) { KeyCode::Esc } else { k.code })
@@ -2041,6 +2045,59 @@ pub fn dialog_new(repo: &Path, parent: Option<&Wt>) -> Res<()> {
                 _ => {}
             }
         }
+    })
+}
+
+/// Pushes its branch and opens its pull request, after a yes that starts on no: it goes out to GitHub.
+pub fn dialog_open_pr(w: &Wt) -> Res<()> {
+    let found = prs::proposal(w);
+    dialog(|term| {
+        let field = |k: &str, v: String| Line::from(vec![tag(k).fg(MUTED), v.fg(FOAM)]);
+        let p = match found {
+            Ok(p) if p.ahead > 0 => p,
+            r => {
+                let e = r.map_or_else(|e| e, |p| (tr().pr_nothing)(&p.base));
+                draw_dialog(term, vec![Line::from(e).fg(CORAL)], tr().hint_any)?;
+                key()?;
+                return Ok(());
+            }
+        };
+        let (ask, mut yes) = ((tr().ask_open_pr)(&p.branch, &p.base), false);
+        let mut lines = vec![
+            Line::from(ask),
+            Line::default(),
+            field(tr().label_title, p.title.clone()),
+            field(tr().label_branch, format!("{} → {}  ({})", p.branch, p.base, (tr().pr_commits)(p.ahead))),
+        ];
+        if p.dirty {
+            lines.push(Line::from(tr().pr_dirty).fg(SIGNAL));
+        }
+        loop {
+            draw_choice(term, lines.clone(), yes, "")?;
+            match key()?.and_then(|k| chosen(k, &mut yes)) {
+                None => continue,
+                Some(false) => return Ok(()),
+                Some(true) => break,
+            }
+        }
+        lines.extend([Line::default(), Line::from(tr().pr_pushing).fg(CURRENT)]);
+        draw_dialog(term, lines.clone(), "")?;
+        lines.pop();
+        match prs::open_pr(w, &p) {
+            Ok((url, new)) => {
+                lines.push(Line::from(vec![format!("{} ", if new { tr().pr_opened } else { tr().pr_already }).fg(KELP), url.clone().fg(FOAM)]));
+                draw_dialog(term, lines, tr().hint_opened)?;
+                if key()? == Some(KeyCode::Char('o')) {
+                    open_url(&url).ok();
+                }
+            }
+            Err(e) => {
+                lines.push(Line::from(short(&e)).fg(CORAL));
+                draw_dialog(term, lines, tr().hint_any)?;
+                key()?;
+            }
+        }
+        Ok(())
     })
 }
 

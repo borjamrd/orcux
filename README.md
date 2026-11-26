@@ -10,14 +10,14 @@ Run several coding agents at once, each in a git worktree of its own. Ultra fast
 - **Bring the work back**: files and diffs, conflicts, merge, and your pull requests beside it.
 - **Fast and light**: one binary under 2 MB, no tmux needed.
 
-| 50 terminals open | |
-| --- | --- |
-| `orcux ls` | 14 ms |
-| switch worktree | 24 ms |
-| CPU at rest, all of orcux | under 0.2 % of one core |
-| memory, all of orcux | under 20 MB |
+| 10 worktrees, a terminal each, at rest | orcux | another TUI (a Rust multiplexer) | another app (Electron) | difference |
+| --- | --- | --- | --- | --- |
+| memory, all its processes | 24 MB | 55 MB | ≈ 1.2 GB | 2.3× and ≈ 49× less |
+| CPU at rest | 0.10 % | 0.60 % | 1.4 % | 6× and 14× less |
+| list the worktrees from the CLI | 20 ms | 55 ms | 171 ms | 2.8× and 8.6× faster |
+| size installed | 2.0 MB | 22.5 MB | 773 MB | 11× and 380× smaller |
 
-Measured by its own test, on every push: [how](docs/speed.md).
+Same machine, same 10 worktrees: [how, and 50 terminals](docs/speed.md).
 
 ## Install
 

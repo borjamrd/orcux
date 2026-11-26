@@ -24,6 +24,19 @@ It opens 50 terminals (10 worktrees with 5 tabs each), starts the interface, wai
 
 CPU is a share of one core. At rest, all of orcux with 50 terminals costs under 0.2 % of one core and under 20 MB.
 
+## Against other tools
+
+The same work on each, on the same Apple M4 Max: one repo, 10 worktrees with a terminal each (an idle shell), the interface open, then 8 seconds to settle and 20 to watch.
+
+| | orcux 0.1 (own engine) | another TUI: a terminal multiplexer for agents, in Rust | another app: a desktop app for agents, on Electron |
+| --- | --- | --- | --- |
+| memory, every process of it (not the shells) | 24 MB, 7 processes | 55 MB, 2 processes | ≈ 1.2 GB (see below) |
+| CPU at rest, every process of it | 0.10 % | 0.60 % | 1.4 % |
+| list the worktrees from its CLI (median of 11) | 20 ms | 55 ms | 171 ms |
+| size installed | 2.0 MB (one binary) | 22.5 MB (one binary) | 773 MB (the app) |
+
+The TUI ran in a home of its own, like orcux. The app was the copy that was already open, with projects of its own: 1.1 GB for the app itself plus 7 MB per terminal (each one gets a process of its own), so ≈ 1.2 GB with 10 terminals; its CPU was measured twice over 60 s. CPU is a share of one core.
+
 ## How it stays this way
 
 - Nothing polls: the server says what changed, and state files are looked at by their date.

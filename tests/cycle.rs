@@ -323,3 +323,28 @@ fn a_rename_moves_the_folder_and_the_branch_and_keeps_its_children() {
     assert!(any(&lab, &["rename", "repo/c", "c"]).status.success());
     assert!(wt(&lab, "c").exists() && wt(&lab, "b").exists());
 }
+
+#[test]
+fn a_pull_request_is_proposed_from_the_commits_on_top() {
+    let Some(lab) = ready() else { return };
+    let repo = lab.dir.join("repo");
+    let origin = lab.dir.join("origin.git");
+    git(&lab.dir, &["init", "-q", "--bare", "-b", "main", origin.to_str().unwrap()]);
+    git(&repo, &["branch", "-M", "main"]);
+    git(&repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+    git(&repo, &["push", "-q", "origin", "main"]);
+    git(&repo, &["remote", "set-head", "origin", "main"]);
+    assert!(any(&lab, &["new", "feat", "--repo", repo.to_str().unwrap()]).status.success());
+    let check = |w: &str| says(&any(&lab, &["pr", w, "--check"]));
+    assert!(check("repo/feat").starts_with("feat → main  0 commits"), "{}", check("repo/feat"));
+    assert!(!any(&lab, &["pr", "repo/feat"]).status.success()); // nothing to propose
+    commit(&wt(&lab, "feat"), "b.txt", "b");
+    assert_eq!(check("repo/feat"), "feat → main  1 commit\nb.txt\n");
+    commit(&wt(&lab, "feat"), "c.txt", "c");
+    assert_eq!(check("repo/feat"), "feat → main  2 commits\nfeat\n");
+    // a child goes into its parent once that one is on origin
+    git(&wt(&lab, "feat"), &["push", "-q", "origin", "feat"]);
+    assert!(any(&lab, &["new", "kid", "--parent", "repo/feat"]).status.success());
+    commit(&wt(&lab, "kid"), "d.txt", "d");
+    assert!(check("repo/kid").starts_with("kid → feat  1 commit"), "{}", check("repo/kid"));
+}

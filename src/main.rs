@@ -9,6 +9,7 @@ mod merge;
 mod mux;
 mod prs;
 mod restore;
+mod review;
 mod theme;
 mod tui;
 mod window;
@@ -1237,8 +1238,9 @@ pub fn set_busy(pane: &str, busy: bool) {
 
 /// The tab of a worktree where an agent runs: the active one if it does.
 pub fn agent_tab(w: &Wt) -> Option<Pane> {
-    let mut t: Vec<Pane> = tabs(&w.id()).into_iter().filter(|p| ["claude", "codex"].contains(&tui::program(&p.cmd))).collect();
-    t.sort_by_key(|p| !p.on);
+    // a program that is not the shell; one that tells what it does first, then the active tab
+    let mut t: Vec<Pane> = tabs(&w.id()).into_iter().filter(|p| !p.shell).collect();
+    t.sort_by_key(|p| (p.agent.is_none(), !p.on));
     t.into_iter().next()
 }
 
@@ -1499,9 +1501,10 @@ fn cli(a: &[&str]) -> Res<()> {
         ["dialog", "rmrepo", repo] => tui::dialog_rm_repo(Path::new(repo)),
         ["dialog", "rm", id] => tui::dialog_rm(&find(Some(id))?),
         ["dialog", "rename", id] => tui::dialog_rename(&find(Some(id))?),
+        ["dialog", "openpr", id] => tui::dialog_open_pr(&find(Some(id))?),
         ["dialog", "pr", repo, branch, label] => tui::dialog_pr(Path::new(repo), branch, label),
         ["dialog", "view", url] => tui::dialog_view(url),
-        ["dialog", "diff", dir, path] => files::show(Path::new(dir), path),
+        ["dialog", "diff", dir, path] => review::show(Path::new(dir), path),
         ["dialog", "close"] => tui::dialog_close(),
         ["dialog", "error", text] => tui::dialog_error(text),
         ["new", name, rest @ ..] => {
@@ -1516,6 +1519,20 @@ fn cli(a: &[&str]) -> Res<()> {
             Ok(())
         }
         ["rm", q, rest @ ..] => remove(&find(Some(q))?, rest.contains(&"--force")),
+        ["pr", q, rest @ ..] => {
+            let w = find(Some(q))?;
+            let p = prs::proposal(&w)?;
+            if rest.contains(&"--check") {
+                println!("{} → {}  {}\n{}", p.branch, p.base, (tr().pr_commits)(p.ahead), p.title);
+                return Ok(());
+            }
+            if p.ahead == 0 {
+                return Err((tr().pr_nothing)(&p.base));
+            }
+            let (url, _) = prs::open_pr(&w, &p)?;
+            println!("{url}");
+            Ok(())
+        }
         ["rename", q, new] => {
             let w = rename(&find(Some(q))?, new)?;
             println!("{}  {}", w.id(), w.path().display());

@@ -53,6 +53,7 @@ pub struct Text {
     pub title_close: &'static str,
     pub title_switch: &'static str,
     pub title_inbox: &'static str,
+    pub title_open_pr: &'static str,
     pub skill_installed: fn(&str) -> String,
     pub skill_failed: fn(&str) -> String,
     pub doc_skill: &'static str,
@@ -180,6 +181,30 @@ pub struct Text {
     pub no_worktree_here: &'static str,
     pub ambiguous: &'static str,
     pub exists: fn(&str) -> String,
+    /// push the branch (1st) and open a pull request into the base (2nd)?
+    pub ask_open_pr: fn(&str, &str) -> String,
+    pub pr_commits: fn(u32) -> String,
+    pub pr_dirty: &'static str,
+    pub pr_nothing: fn(&str) -> String,
+    pub pr_pushing: &'static str,
+    pub pr_opened: &'static str,
+    pub pr_already: &'static str,
+    pub pr_no_base: &'static str,
+    pub pr_no_github: &'static str,
+    pub pr_no_access: fn(&str) -> String,
+    pub hint_opened: &'static str,
+    /// the diff that is commented: what the agent reads before the comments, and where each one is
+    pub review_intro: fn(&str) -> String,
+    pub review_line: fn(u32) -> String,
+    pub review_removed: fn(u32) -> String,
+    pub review_count: fn(usize) -> String,
+    pub review_keys: &'static str,
+    pub review_typing: &'static str,
+    /// send n comments to the agent of a worktree?
+    pub review_ask: fn(usize, &str) -> String,
+    pub review_kept: &'static str,
+    pub review_no_agent: &'static str,
+    pub label_title: &'static str,
     /// a worktree and the program that runs in one of its terminals
     pub rename_busy: fn(&str, &str) -> String,
     pub branch_exists: fn(&str) -> String,
@@ -343,10 +368,10 @@ mod tests {
                 assert!(keys(&k) <= 44, "{lang}: rail {k:?}");
             }
             assert!(width(t.k_yes) + width(t.k_no) + width(t.hint_choose) + width(t.hint_force_key) + 10 <= 60, "{lang}: choice");
-            for s in [t.hint_new, t.hint_rename, t.renaming, t.rename_moves, t.rename_imported, t.hint_pr, t.hint_force, t.hint_any, t.kept_rm, t.kept_unregister, t.kept_close, t.kept_repo, t.hint_add, t.fetching] {
+            for s in [t.hint_new, t.review_kept, t.hint_opened, t.pr_dirty, t.pr_pushing, t.hint_rename, t.renaming, t.rename_moves, t.rename_imported, t.hint_pr, t.hint_force, t.hint_any, t.kept_rm, t.kept_unregister, t.kept_close, t.kept_repo, t.hint_add, t.fetching] {
                 assert!(width(s) <= 60, "{lang}: {s}");
             }
-            for s in [t.label_repo, t.label_parent, t.label_name, t.label_branch, t.label_port] {
+            for s in [t.label_repo, t.label_parent, t.label_name, t.label_branch, t.label_port, t.label_title] {
                 assert!(width(s) <= 6, "{lang}: {s}");
             }
             assert!(width(&(t.counts)(99, 99)) <= 42, "{lang}: counts");
