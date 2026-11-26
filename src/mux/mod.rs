@@ -59,13 +59,23 @@ pub fn chosen() -> &'static str {
 
 /// Inside a pane of tmux or of the engine.
 pub fn inside() -> bool {
-    env::var("TMUX").is_ok() || env::var("ORCUX_MUX").is_ok_and(|s| !s.is_empty())
+    env::var("TMUX").is_ok() || pane_socket().is_some()
+}
+
+/// The engine of the pane this runs in. Not when TMUX_TMPDIR names another folder: who sets it means another server
+/// (a test, a try), and following the pane there once killed the person's own server with every terminal in it.
+fn pane_socket() -> Option<PathBuf> {
+    let s = env::var("ORCUX_MUX").ok().filter(|s| !s.is_empty())?;
+    match env::var("TMUX_TMPDIR").ok().filter(|d| !d.is_empty()) {
+        Some(dir) if !std::path::Path::new(&s).starts_with(&dir) => None,
+        _ => Some(PathBuf::from(s)),
+    }
 }
 
 /// The socket: the one of the pane this runs in, else a folder of this user's, as tmux's.
 pub fn socket(name: Option<&str>) -> PathBuf {
-    if name.is_none() && let Ok(s) = env::var("ORCUX_MUX") && !s.is_empty() {
-        return PathBuf::from(s);
+    if name.is_none() && let Some(s) = pane_socket() {
+        return s;
     }
     let base = env::var("TMUX_TMPDIR").ok().filter(|d| !d.is_empty()).unwrap_or_else(|| "/tmp".into());
     let dir = PathBuf::from(base).join(format!("orcux-{}", unsafe { libc::getuid() }));

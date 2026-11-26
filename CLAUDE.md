@@ -108,7 +108,7 @@ tmux send-keys -t <sidebar_pane> n; tmux send-keys -t <sidebar_pane> -l feat-b; 
 tmux kill-server; rm -rf ~/.cache/orcux-test
 ```
 
-**Never run `tmux kill-server` before `unset TMUX`.** Inside tmux (an agent running in orcux), `$TMUX` wins over `TMUX_TMPDIR`, and so does the default socket if the `TMUX_TMPDIR` folder does not exist: on 2026-11-25 a test killed the user's real server and every terminal in it.
+**Never run `tmux kill-server` (or `orcux tmux kill-server`) before `unset TMUX TMUX_PANE ORCUX_MUX`.** On 2026-11-26 `orcux tmux kill-server` without `unset ORCUX_MUX` killed the person's own engine; since then a `TMUX_TMPDIR` that names another folder beats `ORCUX_MUX` (`mux::pane_socket`), but unset it anyway. Inside tmux (an agent running in orcux), `$TMUX` wins over `TMUX_TMPDIR`, and so does the default socket if the `TMUX_TMPDIR` folder does not exist: on 2026-11-25 a test killed the user's real server and every terminal in it.
 
 ## Known pending items (not done on purpose)
 
