@@ -936,10 +936,11 @@ impl Window {
 /// Whether `orcux window` is the person's interface now: its client is attached. Its name and size.
 pub fn client() -> Option<(String, u32, u32)> {
     let name = tmux(&["show-option", "-gqv", CLIENT]).ok().filter(|n| !n.is_empty())?;
-    let clients = tmux(&["list-clients", "-t", UI, "-F", "#{client_name} #{client_width} #{client_height}"]).ok()?;
+    // the name last: a control client has no height of its own, and the end of the answer is trimmed (when this
+    // client is the last one, its line would lose a field)
+    let clients = tmux(&["list-clients", "-t", UI, "-F", "#{client_width}\t#{client_height}\t#{client_name}"]).ok()?;
     clients.lines().find_map(|l| {
-        let [n, w, h] = l.split(' ').collect::<Vec<_>>()[..] else { return None };
-        // a control client has no height of its own
+        let [w, h, n] = l.splitn(3, '\t').collect::<Vec<_>>()[..] else { return None };
         (n == name).then(|| (name.clone(), w.parse().unwrap_or(0), h.parse().unwrap_or(0)))
     })
 }

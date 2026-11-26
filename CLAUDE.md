@@ -69,7 +69,7 @@ Model:
 - `run` types `agent "$(cat file)"`: the task goes in a file of mode 0600, so nothing in it means anything to the shell, and aliases still work.
 - The plugin of OpenCode starts `orcux hook` one after another: two at once could arrive in the wrong order.
 - Session targets always use `=` (exact match) and no window index: `=orcux:`. Plain `orcux` prefix-matches `orcux-bg`. The user's `~/.tmux.conf` has `base-index 1`, so `:0` breaks.
-- `run()` does `trim_end()`, which eats the trailing `\t` of the last line when `#{@orcux}` is empty. Parse with a default, never with `split_once(...)?`.
+- `run()` does `trim_end()`, which eats the trailing `\t` of the last line when `#{@orcux}` is empty. Parse with a default, never with `split_once(...)?`. Put a field that is never empty last: a control client has no `client_height`, and when `orcux window` was the last client its line lost a field, so dialogs found nobody to show them to.
 - `send` waits 150 ms between the text and Enter: TUIs like claude treat text+Enter in one burst as a paste.
 - Pane titles (`pane-border-status`) cannot hold the frame or the tabs: tmux draws two cells of border before each one, a click on them gives no mouse event at all, and `MouseDown1Border` has no `mouse_x`. Only the status line has ranges (`range=user|X`): that is why the top row is the status line.
 - tmux applies `status-bg`/`status-fg` over `status-style` when they are not `default`: a `set -g status-bg black` in the user's config painted the top row. The session sets both to `default`.
