@@ -650,6 +650,88 @@ pub fn remove_then(w: &Wt, force: bool, config: &config::Config, last: impl Fn()
     Ok(())
 }
 
+/// Why it cannot be renamed now: a program in its terminals would go on in a folder that moved (agents keep their
+/// folder as a path, and Claude Code its conversations by it). Shells are started again where it is.
+pub fn renamable(w: &Wt) -> Res<()> {
+    match tabs(&w.id()).into_iter().find(|p| !p.shell) {
+        Some(p) => Err((tr().rename_busy)(&w.id(), &p.cmd)),
+        None => Ok(()),
+    }
+}
+
+/// Another name: its folder follows, and its branch when it is still named after it and was never pushed (a pushed
+/// one may have a PR). An imported one only changes its name here.
+pub fn rename(w: &Wt, new: &str) -> Res<Wt> {
+    let new = new.trim();
+    if new.is_empty() || new == w.name {
+        return Ok(w.clone());
+    }
+    if new.contains(['/', ':']) || new.contains(char::is_whitespace) {
+        return Err(tr().bad_name.into());
+    }
+    renamable(w)?;
+    let (old, ours, branch) = (w.id(), w.at.is_none(), w.branch()); // read where it is now
+    let to = Wt { name: new.into(), ..w.clone() };
+    if ours && to.path().exists() {
+        return Err((tr().exists)(&tilde(&to.path())));
+    }
+    let relabel = |wts: &mut Vec<Wt>, from: &str, into: &str| {
+        for x in wts.iter_mut().filter(|x| x.repo == w.repo) {
+            if x.name == from {
+                x.name = into.into();
+            }
+            if x.parent.as_deref() == Some(from) {
+                x.parent = Some(into.into());
+            }
+        }
+    };
+    // the new name is taken before git works, as when it is created
+    change(|wts| {
+        if let Some(x) = wts.iter().find(|x| x.id() == to.id()) {
+            return Err(if x.repo == w.repo { (tr().exists)(new) } else { (tr().id_taken)(&x.id()) });
+        }
+        if !wts.iter().any(|x| x.is(w)) {
+            return Err((tr().no_worktree)(&old));
+        }
+        relabel(wts, &w.name, new);
+        Ok(())
+    })?;
+    if ours && w.path().exists() {
+        let (from, into) = (w.path(), to.path());
+        let paths = from.to_str().zip(into.to_str()).ok_or_else(|| tr().non_utf8.to_string());
+        if let Err(e) = paths.and_then(|(a, b)| git(&w.repo, &["worktree", "move", a, b])) {
+            change(|wts| {
+                relabel(wts, new, &w.name);
+                Ok(())
+            })?;
+            return Err(e);
+        }
+        let has = |r: &str| git(&w.repo, &["rev-parse", "--verify", "--quiet", r]).is_ok();
+        if branch.as_deref() == Some(w.name.as_str())
+            && !has(&format!("refs/remotes/origin/{}", w.name))
+            && !has(&format!("refs/heads/{new}"))
+            && let Err(e) = git(&w.repo, &["branch", "-m", &w.name, new])
+        {
+            warn(&e); // renamed all the same; the branch keeps its name
+        }
+    }
+    let _lock = lock();
+    let plain = |s: &str| s.replace('#', "##"); // tmux expands formats in -c
+    let path = plain(&to.path().to_string_lossy());
+    for p in tabs(&old) {
+        tmux(&["set-option", "-p", "-t", &p.pane, "@orcux", &to.id()])?;
+        // its shell is in a folder that moved, with the old ORCUX_ID: a new one, where it is now
+        let mut a = vec!["respawn-pane".to_string(), "-k".into(), "-t".into(), p.pane.clone(), "-c".into(), path.clone()];
+        for e in to.env() {
+            a.extend(["-e".into(), e]);
+        }
+        tmux(&a.iter().map(String::as_str).collect::<Vec<_>>()).ok();
+    }
+    let recent: Vec<String> = recent().into_iter().map(|x| if x == old { to.id() } else { x }).collect();
+    write_state("recent", &recent.join("\n")).ok();
+    Ok(to)
+}
+
 /// The terminals of a worktree that is gone. Its own goes last: with it, this process ends.
 pub fn close_all(w: &Wt) -> Res<()> {
     let me = env::var("TMUX_PANE").unwrap_or_default();
@@ -1367,6 +1449,7 @@ fn cli(a: &[&str]) -> Res<()> {
         ["dialog", "add", base] => tui::dialog_add(Path::new(base)),
         ["dialog", "rmrepo", repo] => tui::dialog_rm_repo(Path::new(repo)),
         ["dialog", "rm", id] => tui::dialog_rm(&find(Some(id))?),
+        ["dialog", "rename", id] => tui::dialog_rename(&find(Some(id))?),
         ["dialog", "pr", repo, branch, label] => tui::dialog_pr(Path::new(repo), branch, label),
         ["dialog", "view", url] => tui::dialog_view(url),
         ["dialog", "diff", dir, path] => files::show(Path::new(dir), path),
@@ -1384,6 +1467,11 @@ fn cli(a: &[&str]) -> Res<()> {
             Ok(())
         }
         ["rm", q, rest @ ..] => remove(&find(Some(q))?, rest.contains(&"--force")),
+        ["rename", q, new] => {
+            let w = rename(&find(Some(q))?, new)?;
+            println!("{}  {}", w.id(), w.path().display());
+            Ok(())
+        }
         ["import", rest @ ..] if rest.iter().any(|p| *p != "--yes") => {
             let paths: Vec<&str> = rest.iter().copied().filter(|p| *p != "--yes").collect();
             import(&paths, rest.contains(&"--yes"))

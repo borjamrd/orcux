@@ -89,6 +89,7 @@ Model:
 - `w` on a PR fetches its branch before creating: an unknown branch would start from `origin/HEAD`.
 - Claude Code has no hook for an interruption (Esc) or a rejected permission: `Stop` does not fire. A working agent whose screen is still for 6 s becomes idle; leaving the mark made typing look like work.
 - A `claude -p` run by the agent inherits `TMUX_PANE` and the plugin: `orcux hook` ignores it by `CLAUDE_CODE_ENTRYPOINT` (`sdk-cli`, not `cli`). The hook prints nothing: its output would reach the agent.
+- `rename` (`e`) moves the folder (`git worktree move`) and renames the branch only when it has the old name and is not on origin; it refuses while a program other than a shell runs in its tabs (Claude Code keeps its folder, and its conversations, by path) and respawns the shells there with the new env. An imported one only changes its name.
 - `rm` runs `git worktree remove` BEFORE killing the pane, so that a dirty worktree fails without losing the terminal.
 
 ## Testing without touching the user's real tmux/worktrees
