@@ -255,6 +255,30 @@ fn seeded(rows: u16, cols: u16, lines: &[Vec<u8>], state: &str) -> vt100::Parser
     p
 }
 
+/// The first bytes after a seed may be the end of a sequence that began before it, which tmux's screen has and a new
+/// emulator never saw: "38;2;1;2;3m" would be printed as text. That end is dropped: parameters and a final byte (CSI),
+/// or a string up to its BEL or ST (OSC).
+fn after_seed(b: &[u8]) -> &[u8] {
+    if b.first() == Some(&0x1b) {
+        return b;
+    }
+    let csi = b.strip_prefix(b"[").unwrap_or(b);
+    let params = csi.iter().take_while(|c| b"0123456789;:?<=>".contains(c)).count();
+    // without its "[", only what cannot be text: several parameters ("12 files" stays)
+    if csi.len() < b.len() || csi[..params].contains(&b';') {
+        if let Some(f) = csi.get(params) && (0x40..=0x7e).contains(f) {
+            return &csi[params + 1..];
+        }
+    }
+    // the rest of a title or another string: short, on one line, ended by BEL or ST
+    let end = b.iter().take(512).position(|c| *c == 0x07 || *c == b'\n').filter(|i| b[*i] == 0x07)
+        .or_else(|| b.windows(2).take(512).position(|w| w == b"\x1b\\").map(|i| i + 1));
+    match end {
+        Some(i) if !b[..i].contains(&0x1b) || b[..i].ends_with(&[0x1b]) => &b[i + 1..],
+        _ => b,
+    }
+}
+
 fn holds(b: &[u8], s: &[u8]) -> bool {
     b.windows(s.len()).any(|w| w == s)
 }
@@ -313,6 +337,8 @@ struct Screen {
     syncing: Option<Instant>,
     /// lines scrolled back into tmux's history, and those lines once they come; 0 is the live screen
     back: u16,
+    /// seeded, and nothing printed since: see after_seed
+    fresh: bool,
     history: Option<vt100::Parser>,
 }
 
@@ -443,7 +469,7 @@ impl Window {
         for (id, size) in live {
             let stale = self.screens.get(&id).is_none_or(|s| s.size != size);
             if stale {
-                self.screens.insert(id.clone(), Screen { parser: None, size, syncing: None, back: 0, history: None });
+                self.screens.insert(id.clone(), Screen { parser: None, size, syncing: None, back: 0, history: None, fresh: false });
                 self.resync(link, &id)?;
             }
         }
@@ -496,7 +522,8 @@ impl Window {
                         s.syncing = on.then(Instant::now);
                     }
                     if let Some(p) = &mut s.parser {
-                        p.process(&b);
+                        let b = if std::mem::take(&mut s.fresh) { after_seed(&b) } else { &b[..] };
+                        p.process(b);
                         if leaves_alternate(&b) {
                             self.resync(link, &id)?;
                         }
@@ -522,6 +549,7 @@ impl Window {
                         if let Some(s) = self.screens.get_mut(&id) {
                             let state = lines.first().map(|l| String::from_utf8_lossy(l).into_owned()).unwrap_or_default();
                             s.parser = Some(seeded(s.size.0, s.size.1, &self.capture, &state));
+                            s.fresh = true;
                             self.dirty = true;
                         }
                     }
@@ -862,6 +890,18 @@ mod tests {
         assert_eq!(sgr(&m, 3, 1), Some(b"\x1b[<0;4;2M".to_vec()));
         let up = MouseEvent { kind: MouseEventKind::ScrollUp, ..m };
         assert_eq!(sgr(&up, 0, 0), Some(b"\x1b[<64;1;1M".to_vec()));
+    }
+
+    #[test]
+    fn the_end_of_a_sequence_before_a_seed() {
+        assert_eq!(after_seed(b"154;161;169;48;2;24;27;32m\xe2\x97\x8b MLDP"), "○ MLDP".as_bytes());
+        assert_eq!(after_seed(b"[1;31mred"), b"red");
+        assert_eq!(after_seed(b"a title\x07$ "), b"$ ");
+        assert_eq!(after_seed(b"\x1b[1mbold"), b"\x1b[1mbold");
+        // plain text stays
+        assert_eq!(after_seed(b"hello world"), b"hello world");
+        assert_eq!(after_seed(b"12 files\n"), b"12 files\n");
+        assert_eq!(after_seed(b"line\nmore\x07"), b"line\nmore\x07");
     }
 
     #[test]
