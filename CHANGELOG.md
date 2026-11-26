@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- After a restart, Antigravity goes on with its conversation too, and Codex and Gemini CLI with the last one of their folder.
+
 ## 0.2.0
 
 - What agents without hooks do, read from their screen: Antigravity, Cursor, Codex and others now tell when they work, ask or need permission. The tabs of `orcux window` show it too.

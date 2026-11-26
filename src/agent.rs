@@ -281,7 +281,7 @@ fn plain(s: &str) -> bool {
 }
 
 /// A text field of what Claude Code sends, which is one line of JSON.
-fn field<'a>(input: &'a str, name: &str) -> Option<&'a str> {
+pub(crate) fn field<'a>(input: &'a str, name: &str) -> Option<&'a str> {
     input.split(&format!("\"{name}\":\"")).nth(1)?.split('"').next()
 }
 

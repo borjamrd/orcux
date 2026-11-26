@@ -348,3 +348,33 @@ fn a_pull_request_is_proposed_from_the_commits_on_top() {
     commit(&wt(&lab, "kid"), "d.txt", "d");
     assert!(check("repo/kid").starts_with("kid → feat  1 commit"), "{}", check("repo/kid"));
 }
+
+#[test]
+fn an_agent_without_hooks_comes_back_too() {
+    let Some(lab) = ready() else { return };
+    let ui = |what: &str| {
+        lab.tmux(&["-L", "outer", "-f", "/dev/null", "new-session", "-d", "-s", "o", "-x", "160", "-y", "46", &format!("env -u TMUX '{ORCUX}'")]);
+        until(what, || lab.tmux(&["-L", "outer", "capture-pane", "-p", "-t", "o"]).contains("alpha"));
+    };
+    // Antigravity: its process is called agy, and it says nothing to orcux; its history says which conversation
+    let said = lab.dir.join("agy-args");
+    fs::create_dir_all(lab.dir.join("real")).unwrap();
+    // a program whose process is called agy: a copy of orcux, waiting in a dialog (a copy of a system binary may not run)
+    fs::copy(ORCUX, lab.dir.join("real/agy")).unwrap();
+    lab::write_exe(&lab.dir.join("bin/agy"), &format!("#!/bin/sh\necho \"$*\" >> {}\nexec {} dialog error waiting\n", said.display(), lab.dir.join("real/agy").display()));
+    lab.orcux(&["new", "alpha"]);
+    let history = lab.dir.join("home/.gemini/antigravity-cli/history.jsonl");
+    fs::create_dir_all(history.parent().unwrap()).unwrap();
+    let line = |dir: &Path, id: &str| format!("{{\"display\":\"hi\",\"timestamp\":1,\"workspace\":\"{}\",\"conversationId\":\"{id}\"}}\n", dir.display());
+    fs::write(&history, line(&wt(&lab, "alpha"), "conv-1") + &line(Path::new("/elsewhere"), "conv-2")).unwrap();
+    lab.orcux(&["send", "alpha", "agy"]);
+    ui("the interface");
+    let state = lab.dir.join("home/.local/state/orcux");
+    until("the list is kept", || fs::read_to_string(state.join("open.tsv")).is_ok_and(|t| t.contains("repo/alpha\t1\t") && t.contains("\tagy|conv-1|")));
+    lab.kill_servers();
+    sleep(Duration::from_secs(1));
+    ui("the interface again");
+    until("it knows what was lost", || says(&any(&lab, &["restore", "--list"])).contains("agy"));
+    lab.orcux(&["restore"]);
+    until("the conversation goes on", || fs::read_to_string(&said).is_ok_and(|t| t.ends_with("--conversation conv-1\n")));
+}
