@@ -1441,7 +1441,7 @@ fn flag<'a>(a: &[&'a str], f: &str) -> Option<&'a str> {
 
 fn cli(a: &[&str]) -> Res<()> {
     // what a person waits for: a dozen questions to tmux, through one connection
-    if matches!(a, ["show", ..] | ["tab", ..] | ["switch"] | ["next"] | ["dialog", ..]) {
+    if matches!(a, ["show", ..] | ["tab", ..] | ["switch"] | ["next"] | ["inbox"] | ["dialog", ..]) {
         control::borrow();
     }
     match a {
@@ -1488,6 +1488,7 @@ fn cli(a: &[&str]) -> Res<()> {
             Ok(())
         }
         ["switch"] => tui::switch(),
+        ["inbox"] => tui::inbox(),
         ["commands"] => tui::commands(),
         ["dialog", "new", repo] => tui::dialog_new(Path::new(repo), None),
         ["dialog", "child", id] => {
