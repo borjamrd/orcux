@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Tabs show what their agent calls the conversation, not only "claude"; a right click on one gives it a name of your own (`orcux tab rename`).
 - The first steps offer to import the worktrees you already had in your repos, made by hand or by another tool (`i`, or `orcux import --found`); nothing is moved.
 
 ## 0.4.0

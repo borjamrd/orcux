@@ -391,8 +391,9 @@ fn the_first_time_shows_the_first_steps() {
     assert!(repos.lines().any(|l| Path::new(l).ends_with("repo")), "{repos}");
     // hidden with x, for good
     lab.tmux(&["-L", "outer", "send-keys", "-t", "o", "x"]);
+    // the key goes through the placeholder to the sidebar, which writes it; the screen may be halfway through a redraw
+    until("they are hidden for good", || lab.dir.join("home/.local/state/orcux/onboarded").exists());
     until("they are hidden", || !screen().contains("○  n"));
-    assert!(lab.dir.join("home/.local/state/orcux/onboarded").exists());
 }
 
 #[test]

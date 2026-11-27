@@ -2291,6 +2291,36 @@ pub fn dialog_import() -> Res<()> {
     })
 }
 
+/// The name of a tab, written over the one it shows now; empty, it goes back to the automatic one (what its agent calls
+/// the conversation, or its program).
+pub fn dialog_tab_name(q: &str) -> Res<()> {
+    let (w, n) = target(q)?;
+    let pane = pane_at(&w, n)?;
+    let now = panes().into_iter().find(|p| p.pane == pane).map(|p| p.label()).unwrap_or_default();
+    dialog(|term| {
+        let (mut name, mut err) = (now.clone(), String::new());
+        loop {
+            let lines = vec![
+                Line::from(vec![tag(tr().label_name).fg(MUTED), format!("{name}▏").into()]),
+                Line::from(tr().tab_name_auto).fg(MUTED),
+                Line::default(),
+                Line::from(err.clone()).fg(CORAL),
+            ];
+            draw_dialog(term, lines, tr().hint_rename)?;
+            match key()? {
+                Some(KeyCode::Esc) => return Ok(()),
+                Some(KeyCode::Backspace) => { name.pop(); }
+                Some(KeyCode::Char(c)) => name.push(c),
+                Some(KeyCode::Enter) => match name_tab(&pane, &name) {
+                    Ok(()) => return Ok(()),
+                    Err(e) => err = short(&e),
+                },
+                _ => {}
+            }
+        }
+    })
+}
+
 /// The skill where other agents look, after a yes: it is the person's home.
 pub fn dialog_skill() -> Res<()> {
     dialog(|term| {
@@ -2596,7 +2626,7 @@ mod tests {
         // both are drawn on the row of a worktree
         let pr = [State::Failed, State::Waiting, State::Done].map(|s| look(s).0);
         for a in [Agent::Question, Agent::Permission, Agent::Failed, Agent::Done] {
-            let p = Pane { pane: "%1".into(), wt: "r/w".into(), tab: 1, on: true, busy: false, cmd: "claude".into(), agent: Some((a, 0)), mark: String::new(), title: String::new(), session: String::new(), shell: false, activity: 0 };
+            let p = Pane { pane: "%1".into(), wt: "r/w".into(), tab: 1, on: true, busy: false, cmd: "claude".into(), name: String::new(), agent: Some((a, 0)), mark: String::new(), title: String::new(), session: String::new(), shell: false, activity: 0 };
             assert!(!pr.contains(&look(p.look()).0), "{a:?}");
         }
     }
@@ -2614,4 +2644,15 @@ mod tests {
         assert_eq!(fit_end("src/lib/a.ts", 6), "…/a.ts");
         assert_eq!((fit("abc", 3), fit("abcd", 3), fit("abcd", 0)), ("abc".into(), "ab…".into(), String::new()));
     }
+    #[test]
+    fn tab_labels() {
+        let p = |cmd: &str, title: &str, name: &str, shell: bool| Pane { pane: "%1".into(), wt: "r/w".into(), tab: 1, on: true, busy: false, cmd: cmd.into(), name: name.into(), agent: None, mark: String::new(), title: title.into(), session: String::new(), shell, activity: 0 };
+        assert_eq!(p("2.1.332", "✳ Preguntas diarias de oposiciones", "", false).label(), "Preguntas diarias de oposic…");
+        assert_eq!(p("2.1.332", "◐ Estado actual", "", false).label(), "Estado actual");
+        assert_eq!(p("2.1.332", "✳ Estado", "mío", false).label(), "mío");
+        assert_eq!(p("zsh", "Instagram", "", true).label(), "zsh");
+        assert_eq!(p("pnpm", "pnpm run dev", "", false).label(), "pnpm");
+        assert_eq!(p("2.1.332", "host.local", "", false).label(), "host.local");
+    }
+
 }

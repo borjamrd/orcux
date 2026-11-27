@@ -816,6 +816,13 @@ impl Window {
             }
             return Ok(());
         }
+        // the right button on a tab: its name
+        if row == 0 && matches!(m.kind, MouseEventKind::Down(MouseButton::Right))
+            && let Some(n) = self.spots.iter().find(|s| (s.0..s.1).contains(&col)).and_then(|s| match s.2 { Spot::Tab(n) => Some(n), Spot::NewTab => None })
+        {
+            std::thread::spawn(move || drop(rename_tab_click(&format!("t{n}"))));
+            return Ok(());
+        }
         // a popup takes the mouse as it takes the keys
         let visible: Vec<Place> = match self.places.iter().find(|p| p.popup.is_some()) {
             Some(p) => vec![p.clone()],
@@ -936,7 +943,7 @@ impl Window {
                 // what its agent does, as in the sidebar: nothing when it is idle
                 let (glyph, color) = tui::look_hex(p.look());
                 let sign = if p.look() == prs::State::Idle { String::new() } else { format!("{glyph} ") };
-                let name = format!(" {} {sign}{} ", p.tab, tui::program(&p.cmd));
+                let name = format!(" {} {sign}{} ", p.tab, p.label());
                 let w = Span::raw(&name).width() as u16;
                 // no room left before the corner: say that there are more
                 if x + w + 6 > right {

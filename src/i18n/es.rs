@@ -32,6 +32,7 @@ pub static ES: Text = Text {
             ("Opt+t", "nueva pestaña en el worktree visible"),
             ("Opt+a / Opt+d", "pestaña anterior / siguiente"),
             ("Opt+q", "cerrar la pestaña"),
+            ("clic derecho en una pestaña", "darle un nombre"),
             ("Opt+o", "ver los comandos disponibles"),
         ]),
         ("Panel de PRs", &[
@@ -134,6 +135,8 @@ pub static ES: Text = Text {
     title_switch: "Worktrees",
     title_inbox: "Te esperan",
     title_agent: "Tu agente",
+    title_tab_name: "Nombre de la pestaña",
+    tab_name_auto: "Vacío: el nombre de la conversación, o el programa.",
     title_import: "Tus worktrees",
     step_import: |n| format!("importa {} que ya tienes", if n == 1 { "el worktree".to_string() } else { format!("los {n} worktrees") }),
     step_imported: |n| format!("{n} worktree{} importado{}", if n == 1 { "" } else { "s" }, if n == 1 { "" } else { "s" }),

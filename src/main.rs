@@ -885,6 +885,8 @@ pub struct Pane {
     /// its mark as it is, and the title of its terminal
     pub mark: String,
     pub title: String,
+    /// the name the person gave its tab, if any
+    pub name: String,
     /// the conversation of its agent, for `restore`
     pub session: String,
     /// no program but the shell
@@ -918,7 +920,7 @@ pub fn foremost<'a>(tabs: impl Iterator<Item = &'a Pane>) -> Option<&'a Pane> {
 }
 
 pub fn panes() -> Vec<Pane> {
-    let f = "#{pane_id}\t#{@orcux}\t#{@orcux_tab}\t#{@orcux_on}\t#{@orcux_busy}\t#{pane_current_command}\t#{@orcux_state}\t#{window_activity}\t#{?@orcux_session,#{@orcux_session}|#{@orcux_model}|#{@orcux_mode},}\t#{pane_title}";
+    let f = "#{pane_id}\t#{@orcux}\t#{@orcux_tab}\t#{@orcux_on}\t#{@orcux_busy}\t#{pane_current_command}\t#{@orcux_state}\t#{window_activity}\t#{?@orcux_session,#{@orcux_session}|#{@orcux_model}|#{@orcux_mode},}\t#{@orcux_tab_name}\t#{pane_title}";
     tmux(&["list-panes", "-a", "-F", f]).unwrap_or_default().lines()
         .map(|l| {
             let mut p = l.split('\t').map(String::from);
@@ -926,11 +928,11 @@ pub fn panes() -> Vec<Pane> {
             let (pane, wt, tab, on, busy, cmd) = (next(), next(), next().parse().unwrap_or(1), next() == "1", next() == "1", next());
             // back in the shell: the agent is gone, whatever it said last
             let shell = ["zsh", "bash", "fish", "sh", "dash", "ksh", "nu"].contains(&cmd.trim_start_matches('-'));
-            let (mark, activity, session, title) = (next(), next().parse().unwrap_or(0), next(), next());
+            let (mark, activity, session, name, title) = (next(), next().parse().unwrap_or(0), next(), next(), next());
             // a new one is at work while its shell still prepares it
             let (begins, over) = agent::begins(&mark);
             let agent = if over || (shell && !begins) { None } else { Agent::parse(&mark) };
-            Pane { pane, wt, tab, on, busy, cmd, agent, mark, title, session, shell, activity }
+            Pane { pane, wt, tab, on, busy, cmd, agent, mark, title, name, session, shell, activity }
         })
         .filter(|p| !p.wt.is_empty())
         // a window linked in two sessions (a view of `orcux window`) lists its pane twice
@@ -1189,10 +1191,11 @@ pub fn style_ui() -> Res<()> {
         (&["ø", "M-o"], commands),
         (&["®", "M-r"], format!("run-shell -b \"'{}' next >/dev/null 2>&1 || true\"", exe.display())),
         (&["MouseDown1Status"], tab("click #{mouse_status_range}")),
+        (&["MouseDown3Status"], tab("name-click #{mouse_status_range}")),
     ] {
         for k in keys {
             // elsewhere, what the key does without orcux
-            let other = if *k == "MouseDown1Status" { "select-window -t =".to_string() } else { format!("send-keys {k}") };
+            let other = match *k { "MouseDown1Status" => "select-window -t =".to_string(), "MouseDown3Status" => String::new(), _ => format!("send-keys {k}") };
             tmux(&["bind-key", "-n", k, "if-shell", "-F", "#{==:#{session_name},orcux}", &cmd, &other]).ok();
         }
     }
@@ -1472,7 +1475,7 @@ pub fn tab_bar() -> String {
         b.fill(&line, left + 1, '─');
         if !id.is_empty() {
             for p in tabs(&id) {
-                let cmd = tui::program(&p.cmd).to_string();
+                let cmd = p.label();
                 let (glyph, color) = tui::look_hex(p.look());
                 let dot = |b: &mut Bar| if p.look() != prs::State::Idle { b.put(&format!("#[fg={}]", hex(color)), &format!("{glyph} ")) };
                 b.s += &format!("#[range=user|t{}]", p.tab);
@@ -1508,6 +1511,41 @@ pub fn tab_bar() -> String {
 }
 
 /// A click on the row above the panes: a tab, or + for a new one.
+impl Pane {
+    /// What its tab says: the name the person gave it; else what its agent calls the conversation (the title of its
+    /// terminal, without the sign of its state in front: "✳ Fix the login" from Claude Code); else its program.
+    pub fn label(&self) -> String {
+        let cut = |s: &str| if s.chars().count() > 28 { format!("{}…", s.chars().take(27).collect::<String>()) } else { s.to_string() };
+        if !self.name.is_empty() {
+            return cut(&self.name);
+        }
+        let program = tui::program(&self.cmd);
+        let title = self.title.trim_start_matches(|c: char| !c.is_alphanumeric()).trim();
+        // a shell's title is its folder, a server's its command line: the program says more
+        let agent = self.agent.is_some() || ["claude", "codex", "gemini", "opencode", "agy", "cursor-agent"].contains(&program);
+        if agent && !title.is_empty() && !self.shell && title != program && !title.contains(['/', '@']) {
+            return cut(title);
+        }
+        program.to_string()
+    }
+}
+
+/// Gives a tab a name of its own; an empty one goes back to the automatic one.
+pub fn name_tab(pane: &str, name: &str) -> Res<()> {
+    let name: String = name.chars().filter(|c| !c.is_control()).collect();
+    match name.trim() {
+        "" => tmux(&["set-option", "-p", "-u", "-t", pane, "@orcux_tab_name"]),
+        n => tmux(&["set-option", "-p", "-t", pane, "@orcux_tab_name", n]),
+    }.map(|_| ())
+}
+
+/// A click with the right button on a tab: its name, in a dialog.
+pub fn rename_tab_click(range: &str) -> Res<()> {
+    let (w, _) = visible()?;
+    let Some(n) = range.strip_prefix('t').and_then(|n| n.parse::<u32>().ok()) else { return Ok(()) };
+    popup(tr().title_tab_name, (64, 8), &["dialog", "tabname", &format!("{}:{n}", w.id())])
+}
+
 pub fn click_tab(range: &str) -> Res<()> {
     let (w, _) = visible()?;
     match range.strip_prefix('t').and_then(|n| n.parse().ok()) {
@@ -1638,6 +1676,7 @@ fn cli(a: &[&str]) -> Res<()> {
         ["dialog", "rm", id] => tui::dialog_rm(&find(Some(id))?),
         ["dialog", "rename", id] => tui::dialog_rename(&find(Some(id))?),
         ["dialog", "agent"] => tui::dialog_agent(),
+        ["dialog", "tabname", q] => tui::dialog_tab_name(q),
         ["dialog", "import"] => tui::dialog_import(),
         ["dialog", "skill"] => tui::dialog_skill(),
         ["dialog", "openpr", id] => tui::dialog_open_pr(&find(Some(id))?),
@@ -1751,6 +1790,11 @@ fn cli(a: &[&str]) -> Res<()> {
         ["tmux", rest @ ..] => std::process::exit(mux::cli(rest)),
         ["mux-server", path] => mux::serve(path),
         ["tab", "click", range] => click_tab(range),
+        ["tab", "name-click", range] => rename_tab_click(range),
+        ["tab", "rename", q, name @ ..] => {
+            let (w, n) = target(q)?;
+            name_tab(&pane_at(&w, n)?, &name.join(" "))
+        }
         ["tab", "next"] => step_tab(true),
         ["tab", "prev"] => step_tab(false),
         ["send", q, text @ ..] if !text.is_empty() => {
