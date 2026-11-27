@@ -1014,6 +1014,7 @@ pub fn run() -> Res<()> {
                 }
             }
             KeyCode::Char('a') => app.popup(tr().title_agent, (64, 14), &["dialog", "agent"]),
+            KeyCode::Char('i') => app.popup(tr().title_import, (84, 18), &["dialog", "import"]),
             KeyCode::Char('s') if first_steps().is_some() => app.popup(tr().title_skill, DIALOG, &["dialog", "skill"]),
             KeyCode::Char('x') if first_steps().is_some() => { write_state("onboarded", "").ok(); }
             KeyCode::Char('P') => if let Some(Row::Wt(w, _)) = app.selected() {
@@ -1318,7 +1319,8 @@ fn pass_on(k: KeyCode) {
 /// what is there, not by having been seen.
 pub fn first_steps() -> Option<Vec<(bool, &'static str, String)>> {
     let wts = load();
-    if !wts.is_empty() || state_dir().join("onboarded").exists() {
+    // imported ones do not end them: the first worktree that orcux makes does
+    if wts.iter().any(|w| w.at.is_none()) || state_dir().join("onboarded").exists() {
         return None;
     }
     let repos = repos();
@@ -1328,7 +1330,16 @@ pub fn first_steps() -> Option<Vec<(bool, &'static str, String)>> {
     };
     let agent = if work::agent_chosen() { (true, "a", (tr().step_agent_done)(&work::default_agent())) } else { (false, "a", tr().step_agent.to_string()) };
     let skill = (agent::shared_skill().exists(), "s", tr().step_skill.to_string());
-    Some(vec![project, agent, skill, (false, "n", tr().step_worktree.to_string())])
+    let mut steps = vec![project];
+    // worktrees that other tools, or the person, already made in these repos
+    let (found, imported) = (found_worktrees().len(), wts.iter().filter(|w| w.at.is_some()).count());
+    if found > 0 {
+        steps.push((false, "i", (tr().step_import)(found)));
+    } else if imported > 0 {
+        steps.push((true, "i", (tr().step_imported)(imported)));
+    }
+    steps.extend([agent, skill, (false, "n", tr().step_worktree.to_string())]);
+    Some(steps)
 }
 
 pub fn welcome() -> Res<()> {
@@ -2237,6 +2248,47 @@ fn selected(l: Line<'_>, width: u16) -> Line<'_> {
     l.spans.push(pad.into());
     l.spans.iter_mut().for_each(|s| s.style.bg = Some(WAKE));
     l
+}
+
+/// The worktrees that git knows in the registered repos and orcux does not: all chosen, space leaves one out, Enter
+/// imports them where they are (nothing is moved).
+pub fn dialog_import() -> Res<()> {
+    let found = found_worktrees();
+    let branch = |p: &Path| git(p, &["branch", "--show-current"]).unwrap_or_default();
+    let rows: Vec<(PathBuf, String)> = found.into_iter().map(|p| { let b = branch(&p); (p, b) }).collect();
+    let mut chosen = vec![true; rows.len()];
+    let (mut sel, mut done) = (0usize, None::<usize>);
+    dialog(|term| loop {
+        term.draw(|f| {
+            let [head, list, foot] = Layout::vertical([Constraint::Length(2), Constraint::Fill(1), Constraint::Length(1)]).areas(f.area());
+            let text = match done { Some(n) => (tr().imported)(n), None if rows.is_empty() => tr().import_none.to_string(), None => tr().import_intro.to_string() };
+            f.render_widget(Line::from(fg(format!(" {text}"), if done.is_some() { KELP } else { MUTED })), head);
+            let w = f.area().width;
+            let lines: Vec<Line> = rows.iter().enumerate().map(|(i, (p, b))| {
+                let mark = if chosen[i] { "☑" } else { "☐" };
+                let l = lr(w, vec![fg(format!(" {mark} "), CURRENT), fg(tilde(p), FOAM)], vec![fg(format!("{b} "), MUTED)]);
+                if i == sel { selected(l, w) } else { l }
+            }).collect();
+            f.render_widget(Paragraph::new(lines), list);
+            let k: &[(&str, &str)] = if done.is_some() || rows.is_empty() { &[("esc", tr().k_close)] } else { &[("↑/↓", tr().k_move), ("space", tr().k_toggle), ("⏎", tr().k_import), ("esc", tr().k_close)] };
+            f.render_widget(keys(k), foot);
+        }).map_err(|e| e.to_string())?;
+        let Some(k) = key()? else { continue };
+        if done.is_some() || rows.is_empty() {
+            return Ok(());
+        }
+        match k {
+            KeyCode::Esc => return Ok(()),
+            KeyCode::Down | KeyCode::Char('j') => sel = (sel + 1).min(rows.len() - 1),
+            KeyCode::Up | KeyCode::Char('k') => sel = sel.saturating_sub(1),
+            KeyCode::Char(' ') => chosen[sel] = !chosen[sel],
+            KeyCode::Enter => {
+                let take: Vec<PathBuf> = rows.iter().zip(&chosen).filter(|(_, c)| **c).map(|(r, _)| r.0.clone()).collect();
+                done = Some(import_quiet(&take)?);
+            }
+            _ => {}
+        }
+    })
 }
 
 /// The skill where other agents look, after a yes: it is the person's home.

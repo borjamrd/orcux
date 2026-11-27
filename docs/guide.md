@@ -30,7 +30,7 @@ Everything beyond the [README](../README.md). `orcux help` and `Opt+o` list ever
 
 ## The first time
 
-`orcux` inside a repo adds it as your first project, and the empty screen lists the first steps, each with its key: add a project (`A`), choose your agent (`a`), teach orcux to every agent (`s`), create your first worktree (`n`). Each one is ticked by what is there, and the list goes away with your first worktree, or with `x`.
+`orcux` inside a repo adds it as your first project, and the empty screen lists the first steps, each with its key: add a project (`A`), import the worktrees you already had in it, made by hand or by another tool (`i`, which git lists; nothing is moved), choose your agent (`a`), teach orcux to every agent (`s`), create your first worktree (`n`). Each one is ticked by what is there, and the list goes away with the first worktree orcux makes, or with `x`. `i` works later too, for repos you add, and `orcux import --found [--yes]` does it from a terminal.
 
 ## What runs the terminals
 

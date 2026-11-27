@@ -433,3 +433,24 @@ fn another_machine_through_ssh() {
     assert!(calls[0].starts_with("-t -- box exec \"$SHELL\" -lc ") && calls[0].contains("orcux") && calls[0].contains("ls"), "{calls:?}");
     assert!(calls[1].contains("install.sh | sh") && calls[2] == calls[0], "{calls:?}");
 }
+
+#[test]
+fn worktrees_made_before_are_found_and_imported() {
+    let Some(lab) = ready() else { return };
+    let repo = lab.dir.join("repo");
+    // worktrees made by hand, or by any other tool: git knows them all
+    let other = lab.dir.join("elsewhere");
+    git(&repo, &["worktree", "add", "-q", "-b", "one", other.join("one").to_str().unwrap()]);
+    git(&repo, &["worktree", "add", "-q", "-b", "two", other.join("two").to_str().unwrap()]);
+    git(&repo, &["worktree", "add", "-q", "-b", "gone", other.join("gone").to_str().unwrap()]);
+    fs::remove_dir_all(other.join("gone")).unwrap();
+    assert!(any(&lab, &["new", "mine", "--repo", repo.to_str().unwrap()]).status.success());
+    let found = says(&any(&lab, &["import", "--found"]));
+    assert_eq!(found.lines().count(), 2, "{found}");
+    assert!(found.contains("one") && found.contains("two") && !found.contains("mine") && !found.contains("gone"), "{found}");
+    assert!(any(&lab, &["import", "--found", "--yes"]).status.success());
+    assert_eq!(says(&any(&lab, &["import", "--found"])).trim(), "");
+    let ls = says(&any(&lab, &["ls"]));
+    assert!(ls.contains("repo/one") && ls.contains("repo/two"), "{ls}");
+    assert!(other.join("one").exists(), "nothing is moved");
+}

@@ -646,6 +646,45 @@ fn importable(p: &Path, wts: &[Wt]) -> Res<Wt> {
     }
 }
 
+/// The worktrees of the registered repos that orcux does not know: made by hand or by any other tool, git lists them
+/// all. Those whose folder is gone are left out.
+pub fn found_worktrees() -> Vec<PathBuf> {
+    let known: Vec<PathBuf> = load().iter().map(|w| w.path().canonicalize().unwrap_or_else(|_| w.path())).collect();
+    let mut out = vec![];
+    for repo in repos() {
+        let Ok(list) = git(&repo, &["worktree", "list", "--porcelain"]) else { continue };
+        // one block per worktree; the first one is the main checkout
+        for block in list.split("\n\n").skip(1) {
+            let Some(path) = block.lines().find_map(|l| l.strip_prefix("worktree ")) else { continue };
+            let p = PathBuf::from(path);
+            if block.lines().any(|l| l.starts_with("prunable") || l == "bare") || !p.is_dir() {
+                continue;
+            }
+            let real = p.canonicalize().unwrap_or_else(|_| p.clone());
+            if !known.contains(&real) && !out.contains(&real) {
+                out.push(real);
+            }
+        }
+    }
+    out
+}
+
+/// Registers those worktrees where they are, as `import --yes` does, without printing: how many.
+pub fn import_quiet(paths: &[PathBuf]) -> Res<usize> {
+    change(|wts| {
+        let mut n = 0;
+        for p in paths {
+            if let Ok(mut w) = importable(p, wts) {
+                w.slot = free_slot(wts);
+                add_repo(&w.repo)?;
+                wts.push(w);
+                n += 1;
+            }
+        }
+        Ok(n)
+    })
+}
+
 /// Registers existing worktrees without moving or changing them; without `yes`, only lists what it would do.
 fn import(paths: &[&str], yes: bool) -> Res<()> {
     let mut n = 0;
@@ -1599,6 +1638,7 @@ fn cli(a: &[&str]) -> Res<()> {
         ["dialog", "rm", id] => tui::dialog_rm(&find(Some(id))?),
         ["dialog", "rename", id] => tui::dialog_rename(&find(Some(id))?),
         ["dialog", "agent"] => tui::dialog_agent(),
+        ["dialog", "import"] => tui::dialog_import(),
         ["dialog", "skill"] => tui::dialog_skill(),
         ["dialog", "openpr", id] => tui::dialog_open_pr(&find(Some(id))?),
         ["dialog", "pr", repo, branch, label, login] => tui::dialog_pr(Path::new(repo), branch, label, login),
@@ -1635,6 +1675,15 @@ fn cli(a: &[&str]) -> Res<()> {
         ["rename", q, new] => {
             let w = rename(&find(Some(q))?, new)?;
             println!("{}  {}", w.id(), w.path().display());
+            Ok(())
+        }
+        ["import", "--found", rest @ ..] => {
+            let found = found_worktrees();
+            if rest.contains(&"--yes") {
+                println!("{}", (tr().imported)(import_quiet(&found)?));
+            } else {
+                found.iter().for_each(|p| println!("{}", tilde(p)));
+            }
             Ok(())
         }
         ["import", rest @ ..] if rest.iter().any(|p| *p != "--yes") => {
