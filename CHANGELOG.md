@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The first steps offer to import the worktrees you already had in your repos, made by hand or by another tool (`i`, or `orcux import --found`); nothing is moved.
+
 ## 0.4.0
 
 - `compose = docker-compose.yml` in `.orcux`: several worktrees run the same Docker Compose file at once, each on ports of its own; `PORT_<SERVICE>_<PORT>` tells where each one went.
