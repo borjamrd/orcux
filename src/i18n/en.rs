@@ -32,6 +32,7 @@ pub static EN: Text = Text {
             ("Opt+t", "new tab in the visible worktree"),
             ("Opt+a / Opt+d", "previous / next tab"),
             ("Opt+q", "close the tab"),
+            ("right click on a tab", "give it a name"),
             ("Opt+o", "show the available commands"),
         ]),
         ("PR panel", &[
@@ -134,6 +135,8 @@ pub static EN: Text = Text {
     title_switch: "Worktrees",
     title_inbox: "Waiting for you",
     title_agent: "Your agent",
+    title_tab_name: "Name of the tab",
+    tab_name_auto: "Empty: the conversation's name, or the program.",
     title_import: "Your worktrees",
     step_import: |n| format!("import the {n} worktree{} that you already have", if n == 1 { "" } else { "s" }),
     step_imported: |n| format!("{n} worktree{} imported", if n == 1 { "" } else { "s" }),

@@ -25,6 +25,7 @@ Everything beyond the [README](../README.md). `orcux help` and `Opt+o` list ever
 | --- | --- |
 | click | select a row, or the pane you work in; again on a row, open it |
 | click on a tab, on `+` | show that tab, open a new one |
+| right click on a tab | give it a name; empty, it shows what its agent calls the conversation, or its program |
 | wheel | the terminal's history; any key goes back |
 | drag | select and copy; with Shift in programs that use the mouse |
 
